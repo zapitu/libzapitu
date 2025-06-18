@@ -10,7 +10,9 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isJidUser,
-	isLidUser
+	isLidUser,
+	jidDecode,
+	jidNormalizedUser
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import { ILogger } from './logger'
@@ -55,34 +57,72 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const msgId = stanza.attrs.id
 	const from = stanza.attrs.from
 	const participant: string | undefined = stanza.attrs.participant
-	const recipient: string | undefined = stanza.attrs.recipient
-
 	const isMe = (jid: string) => areJidsSameUser(jid, meId)
 	const isMeLid = (jid: string) => areJidsSameUser(jid, meLid)
+	const participant_lid: string | undefined = stanza.attrs.participant_lid
+	const sender_lid: string | undefined = stanza.attrs.sender_lid
+	const recipient: string | undefined = stanza.attrs.recipient
+	const sender_pn: string | undefined = stanza?.attrs?.sender_pn
+	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
 
-	if (isJidUser(from) || isLidUser(from)) {
+		if (isJidUser(from) || isLidUser(from)) {
 		if (recipient && !isJidMetaIa(recipient)) {
 			if (!isMe(from) && !isMeLid(from)) {
-				throw new Boom('receipient present, but msg not from me', { data: stanza })
+			throw new Boom('recipient present, but msg not from me', { data: stanza });
 			}
-
-			chatId = recipient
+			chatId = recipient;
 		} else {
-			chatId = from
+			chatId = from || sender_lid;
 		}
 
-		msgType = 'chat'
-		author = from
-	} else if (isJidGroup(from)) {
+		msgType = 'chat';
+
+		const deviceOrigem = jidDecode(from)?.device;
+
+		if (fromMe) {
+			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user;
+
+			author = deviceOrigem
+			? `${userDestino}:${deviceOrigem}@lid`
+			: `${userDestino}@lid`;
+		} else {
+			if (!sender_lid) {
+			author = from;
+			} else {
+			const userDestino = jidDecode(sender_lid)?.user;
+
+			author = deviceOrigem
+				? `${userDestino}:${deviceOrigem}@lid`
+				: `${userDestino}@lid`;
+			}
+		}
+		}
+ else if (isJidGroup(from)) {
 		if (!participant) {
 			throw new Boom('No participant in group message')
 		}
 
 		msgType = 'group'
-		author = participant
-		chatId = from
+		chatId = from || sender_lid
+		const deviceOrigem = jidDecode(participant)?.device;
+		if (fromMe) {
+			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user;
+			author = deviceOrigem
+			? `${userDestino}:${deviceOrigem}@lid`
+			: `${userDestino}@lid`;
+		} else {
+			if (!participant_lid) {
+			author = participant;
+			} else {
+			const userDestino = jidDecode(participant_lid)?.user;
+			author = deviceOrigem
+				? `${userDestino}:${deviceOrigem}@lid`
+				: `${userDestino}@lid`;
+			}
+		}
+
 	} else if (isJidBroadcast(from)) {
-		if (!participant) {
+		if (!participant && participant_lid) {
 			throw new Boom('No participant in group message')
 		}
 
@@ -94,7 +134,8 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		}
 
 		chatId = from
-		author = participant
+		author = participant || participant_lid			
+	
 	} else if (isJidNewsletter(from)) {
 		msgType = 'newsletter'
 		chatId = from
@@ -103,15 +144,18 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		throw new Boom('Unknown message type', { data: stanza })
 	}
 
-	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
+	
 	const pushname = stanza?.attrs?.notify
 
 	const key: WAMessageKey = {
 		remoteJid: chatId,
 		fromMe,
 		id: msgId,
-		participant
-	}
+		...(sender_lid && { sender_lid }),
+		...(participant && { participant }),
+		...(participant_lid && { participant_lid }),
+		...(sender_pn && { sender_pn }),
+	};
 
 	const fullMessage: proto.IWebMessageInfo = {
 		key,

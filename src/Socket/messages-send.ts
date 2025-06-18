@@ -38,6 +38,7 @@ import {
 	getBinaryNodeChildren,
 	isJidGroup,
 	isJidUser,
+	isLidUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
@@ -73,9 +74,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const userDevicesCache =
 		config.userDevicesCache ||
 		new NodeCache({
-			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES, // 5 minutes
+			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES, 
 			useClones: false
 		})
+
+const lidCache = new NodeCache({
+  stdTTL: 3600,       // 1 hour
+  useClones: false
+});
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -219,7 +225,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const result = await sock.executeUSyncQuery(query)
 
 		if (result) {
-			const extracted = extractDeviceJids(result?.list, authState.creds.me!.id, ignoreZeroDevices)
+			const extracted = extractDeviceJids(result?.list, authState.creds.me!.id, ignoreZeroDevices, authState.creds.me?.lid)
 			const deviceMap: { [_: string]: JidWithDevice[] } = {}
 
 			for (const item of extracted) {
@@ -361,18 +367,46 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
-		}: MessageRelayOptions
+			statusJidList,
+			isretry
+		}: MessageRelayOptions,
+	
 	) => {
 		const meId = authState.creds.me!.id
+		const meLid =  authState.creds.me!.lid || authState.creds.me!.id
+		let isRemotejid : string;
+		if(!participant && isJidUser(jid) )
+				{
+					isRemotejid = jid;
+					if(!isLidUser(jid))
+						{
 
-		let shouldIncludeDeviceIdentity = false
-
+						const verify = lidCache.get(jid);
+						if(verify){ 
+							jid = verify
+						}
+						else
+						{	const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
+							 usyncQuery.withUser(new USyncUser().withPhone(jid.split('@')[0]))
+							const results = await sock.executeUSyncQuery(usyncQuery)
+						if (results?.list) {
+							const maybeLid = results.list[0]?.lid;
+								if (typeof maybeLid === 'string') {
+								lidCache.set(jid,maybeLid)
+								jid = maybeLid;
+								
+								}					
+						   }
+						}
+					}
+			}	
 		const { user, server } = jidDecode(jid)!
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
 		const isStatus = jid === statusJid
-		const isLid = server === 'lid'
+		const isLid = server === 'lid'				
+
+		let shouldIncludeDeviceIdentity = false		
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -389,19 +423,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				message
 			}
 		}
-
+           
 		const extraAttrs = {}
 
 		if (participant) {
-			// when the retry request is not for a group
-			// only send to the specific device that asked for a retry
-			// otherwise the message is sent out to every device that should be a recipient
+	
 			if (!isGroup && !isStatus) {
 				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 			}
-
-			const { user, device } = jidDecode(participant.jid)!
-			devices.push({ user, device })
+			const { user, device, } = jidDecode(participant.jid)!
+			devices.push({ user, device, jid: jidNormalizedUser(participant.jid) })	
 		}
 
 		await authState.keys.transaction(async () => {
@@ -437,7 +468,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				])
 
 				if (!participant) {
-					const participantsList = groupData && !isStatus ? groupData.participants.map(p => p.id) : []
+				   const participantsList = (groupData && !isStatus) ? groupData.participants.map(p => p.lid || p.id)
+				    .filter((id): id is string => typeof id === 'string'): [];
 					if (isStatus && statusJidList) {
 						participantsList.push(...statusJidList)
 					}
@@ -468,14 +500,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 
 				const senderKeyJids: string[] = []
-				// ensure a connection is established with every device
-				for (const { user, device } of devices) {
-					const jid = jidEncode(user, groupData?.addressingMode === 'lid' ? 'lid' : 's.whatsapp.net', device)
-					if (!senderKeyMap[jid] || !!participant) {
-						senderKeyJids.push(jid)
-						// store that this person has had the sender keys sent to them
-						senderKeyMap[jid] = true
+					for(const { user, device, jid } of devices) {
+						const server = jidDecode(jid)?.server || 'lid' ;
+						const senderId = jidEncode(user, server, device)						
+						if (!senderKeyMap[senderId] || !!participant) {
+						senderKeyJids.push(senderId)
+						senderKeyMap[senderId] = true
 					}
+						
 				}
 
 				// if there are some participants with whom the session has not been established
@@ -506,40 +538,53 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
-				const { user: meUser } = jidDecode(meId)!
+							
+				const { user: meUser, device: meDevice } = jidDecode(meId)!
+					const lidattrs = jidDecode(authState.creds.me?.lid);
+					const jlidUser = lidattrs?.user
+				
+					if(!participant) {						
+				
 
-				if (!participant) {
-					devices.push({ user })
-					if (user !== meUser) {
-						devices.push({ user: meUser })
+						devices.push({ user, device:0, jid })						
+						if(meDevice !== undefined && meDevice !== 0) {						
+						   
+						   if(isLidUser(jid) && jlidUser)
+						   {							
+							devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
+							const additionalDevices = await getUSyncDevices([ jid, meLid], !!useUserDevicesCache, true)
+							devices.push(...additionalDevices);							
+						   }
+						   else
+						   {
+						   devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});
+						   const additionalDevices = await getUSyncDevices([ jid, meId], !!useUserDevicesCache, true)
+						   devices.push(...additionalDevices);	
+						   }					
+					    
 					}
-
-					if (additionalAttributes?.['category'] !== 'peer') {
-						const additionalDevices = await getUSyncDevices([meId, jid], !!useUserDevicesCache, true)
-						devices.push(...additionalDevices)
-					}
+						
 				}
 
-				const allJids: string[] = []
-				const meJids: string[] = []
-				const otherJids: string[] = []
-				for (const { user, device } of devices) {
-					const isMe = user === meUser
-					const jid = jidEncode(
-						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
-						isLid ? 'lid' : 's.whatsapp.net',
-						device
-					)
-					if (isMe) {
-						meJids.push(jid)
-					} else {
-						otherJids.push(jid)
+				    const allJids: string[] = []
+					const meJids: string[] = []
+					const otherJids: string[] = []
+					for(const { user, device, jid} of devices) {
+						const isMe = user === meUser
+						const ismeLid = user ===jlidUser						
+						const server = jidDecode(jid)?.server || 'lid' ;
+						const senderId = jidEncode(user, server, device)
+						if (isMe || ismeLid) {							
+								meJids.push(senderId);
+							}
+							else
+							{                 
+								otherJids.push(senderId);							
+							}
+						   allJids.push(senderId)
 					}
-
-					allJids.push(jid)
-				}
-
-				await assertSessions(allJids, false)
+              
+					await assertSessions(allJids, isretry ? true : false);
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
@@ -584,7 +629,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (participant) {
 				if (isJidGroup(destinationJid)) {
 					stanza.attrs.to = destinationJid
-					stanza.attrs.participant = participant.jid
+					stanza.attrs.participant = participant.jid				
 				} else if (areJidsSameUser(participant.jid, meId)) {
 					stanza.attrs.to = participant.jid
 					stanza.attrs.recipient = destinationJid
@@ -592,7 +637,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					stanza.attrs.to = participant.jid
 				}
 			} else {
-				stanza.attrs.to = destinationJid
+				stanza.attrs.to = isRemotejid || destinationJid
 			}
 
 			if (shouldIncludeDeviceIdentity) {

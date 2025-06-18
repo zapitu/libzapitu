@@ -108,7 +108,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'ack',
 			attrs: {
 				id: attrs.id,
-				to: attrs.from,
+				to: attrs.from || attrs.sender_lid,
 				class: tag
 			}
 		}
@@ -120,7 +120,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (!!attrs.participant) {
 			stanza.attrs.participant = attrs.participant
 		}
-
+		
 		if (!!attrs.recipient) {
 			stanza.attrs.recipient = attrs.recipient
 		}
@@ -182,8 +182,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (retryCount === 1) {
 			//request a resend via phone
-			const msgId = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
+			//const msgId = await requestPlaceholderResend(msgKey)
+			//logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
+			//função não recomendada nesse caso aqui
 		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
@@ -589,35 +590,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessagesAgain = async (key: proto.IMessageKey, ids: string[], retryNode: BinaryNode) => {
-		// todo: implement a cache to store the last 256 sent messages (copy whatsmeow)
+	
 		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
 		const remoteJid = key.remoteJid!
 		const participant = key.participant || remoteJid
-		// if it's the primary jid sending the request
-		// just re-send the message to everyone
-		// prevents the first message decryption failure
-		const sendToAll = !jidDecode(participant)?.device
-		await assertSessions([participant], true)
-
-		if (isJidGroup(remoteJid)) {
-			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
-		}
-
-		logger.debug({ participant, sendToAll }, 'forced new session for retry recp')
+		const sendToAll = !jidDecode(participant)?.device	
 
 		for (const [i, msg] of msgs.entries()) {
 			if (msg) {
 				updateSendMessageAgainCount(ids[i], participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], isretry: true }
 
-				if (sendToAll) {
-					msgRelayOpts.useUserDevicesCache = false
-				} else {
+			
 					msgRelayOpts.participant = {
 						jid: participant,
 						count: +retryNode.attrs.count
 					}
-				}
+				
 
 				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
 			} else {
@@ -819,7 +808,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								}
 
 								const encNode = getBinaryNodeChild(node, 'enc')
-								await sendRetryRequest(node, !encNode)
+								await sendRetryRequest(node, true)
 								if (retryRequestDelayMs) {
 									await delay(retryRequestDelayMs)
 								}
