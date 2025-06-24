@@ -156,7 +156,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			const nodeAction = getBinaryNodeChild(node, action)
 			const participantsAffected = getBinaryNodeChildren(nodeAction, 'participant')
 			return participantsAffected.map(p => {
-				return { status: p.attrs.error || '200', jid: p.attrs.jid }
+				return { status: p.attrs.error || '200', jid: p.attrs.jid, lid: p.attrs.lid }
 			})
 		},
 		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
@@ -173,7 +173,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			const node = getBinaryNodeChild(result, action)
 			const participantsAffected = getBinaryNodeChildren(node, 'participant')
 			return participantsAffected.map(p => {
-				return { status: p.attrs.error || '200', jid: p.attrs.jid, content: p }
+				return { status: p.attrs.error || '200', jid: p.attrs.jid, lid:p.attrs.lid, content: p }
 			})
 		},
 		groupUpdateDescription: async (jid: string, description?: string) => {
@@ -349,7 +349,8 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 			return {
 				id: attrs.jid,
 				jid: attrs.phone_number ? jidNormalizedUser(attrs.phone_number) : undefined,
-				admin: (attrs.type || null) as GroupParticipant['admin']
+				admin: (attrs.type || null) as GroupParticipant['admin'],
+				lid: attrs.lid
 			}
 		}),
 		ephemeralDuration: eph ? +eph : undefined

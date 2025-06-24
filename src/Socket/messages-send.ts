@@ -468,8 +468,7 @@ const lidCache = new NodeCache({
 				])
 
 				if (!participant) {
-				   const participantsList = (groupData && !isStatus) ? groupData.participants.map(p => p.lid || p.id)
-				    .filter((id): id is string => typeof id === 'string'): [];
+				   const participantsList = (groupData && !isStatus) ? groupData.participants.map(p => p.lid || p.id) : [];
 					if (isStatus && statusJidList) {
 						participantsList.push(...statusJidList)
 					}
