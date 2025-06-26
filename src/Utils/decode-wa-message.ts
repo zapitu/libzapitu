@@ -81,7 +81,6 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 
 		if (fromMe) {
 			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user;
-
 			author = deviceOrigem
 			? `${userDestino}:${deviceOrigem}@lid`
 			: `${userDestino}@lid`;
@@ -90,7 +89,6 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 			author = from;
 			} else {
 			const userDestino = jidDecode(sender_lid)?.user;
-
 			author = deviceOrigem
 				? `${userDestino}:${deviceOrigem}@lid`
 				: `${userDestino}@lid`;
@@ -101,7 +99,6 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		if (!participant && !participant_lid) {
 			throw new Boom('No participant in group message')
 		}
-
 		msgType = 'group'
 		chatId = from || sender_lid
 		const deviceOrigem = jidDecode(participant)?.device;

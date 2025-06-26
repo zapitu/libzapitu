@@ -480,7 +480,7 @@ const lidCache = new NodeCache({
 						}
 					}
 
-					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
+					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false);
 					devices.push(...additionalDevices)
 				}
 
@@ -501,11 +501,10 @@ const lidCache = new NodeCache({
 				const senderKeyJids: string[] = []
 					for(const { user, device, jid } of devices) {
 						const server = jidDecode(jid)?.server || 'lid' ;
-						const senderId = jidEncode(user, server, device)						
-						if (!senderKeyMap[senderId] || !!participant) {
+						const senderId = jidEncode(user, server, device)				
 						senderKeyJids.push(senderId)
 						senderKeyMap[senderId] = true
-					}
+					
 						
 				}
 
@@ -540,30 +539,19 @@ const lidCache = new NodeCache({
 							
 				const { user: meUser, device: meDevice } = jidDecode(meId)!
 					const lidattrs = jidDecode(authState.creds.me?.lid);
-					const jlidUser = lidattrs?.user
+					const jlidUser = lidattrs?.user || meLid
 				
 					if(!participant) {						
 				
-
-						devices.push({ user, device:0, jid })						
-						if(meDevice !== undefined && meDevice !== 0) {						
-						   
-						   if(isLidUser(jid) && jlidUser)
-						   {							
+						    devices.push({ user, device:0, jid })						
+						   if(meDevice !== undefined && meDevice !== 0) {					
+						   	devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});						
 							devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
-							const additionalDevices = await getUSyncDevices([ jid, meLid], !!useUserDevicesCache, true)
-							devices.push(...additionalDevices);							
-						   }
-						   else
-						   {
-						   devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});
-						   const additionalDevices = await getUSyncDevices([ jid, meId], !!useUserDevicesCache, true)
-						   devices.push(...additionalDevices);	
-						   }					
-					    
-					}
+							const additionalDevices = await getUSyncDevices([ jid, meLid, meId], !!useUserDevicesCache, true)
+							devices.push(...additionalDevices);												
+					     }
 						
-				}
+				      }
 
 				    const allJids: string[] = []
 					const meJids: string[] = []

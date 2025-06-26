@@ -757,7 +757,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		let response: string | undefined
-
+        /*
 		if (getBinaryNodeChild(node, 'unavailable') && !encNode) {
 			await sendMessageAck(node)
 			const { key } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '').fullMessage
@@ -772,6 +772,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				placeholderResendCache.del(node.attrs.id)
 			}
 		}
+			Este trecho de código estava causando loops de reenvio e também após um tempo algumas mensagens estão sendo enviadas novamente.
+		*/
 
 		const {
 			fullMessage: msg,
