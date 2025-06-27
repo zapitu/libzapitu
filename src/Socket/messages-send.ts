@@ -374,32 +374,6 @@ const lidCache = new NodeCache({
 	) => {
 		const meId = authState.creds.me!.id
 		const meLid =  authState.creds.me!.lid || authState.creds.me!.id
-		let isRemotejid : string;
-		if(!participant && isJidUser(jid) )
-				{
-					isRemotejid = jid;
-					if(!isLidUser(jid))
-						{
-
-						const verify = lidCache.get(jid);
-						if(verify){ 
-							jid = verify
-						}
-						else
-						{	const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
-							 usyncQuery.withUser(new USyncUser().withPhone(jid.split('@')[0]))
-							const results = await sock.executeUSyncQuery(usyncQuery)
-						if (results?.list) {
-							const maybeLid = results.list[0]?.lid;
-								if (typeof maybeLid === 'string') {
-								lidCache.set(jid,maybeLid)
-								jid = maybeLid;
-								
-								}					
-						   }
-						}
-					}
-			}	
 		const { user, server } = jidDecode(jid)!
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
@@ -495,7 +469,7 @@ const lidCache = new NodeCache({
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
 					data: bytes,
-					meId
+					meId: meLid
 				})
 
 				const senderKeyJids: string[] = []
@@ -543,18 +517,19 @@ const lidCache = new NodeCache({
 				
 					if(!participant) {						
 				
-						    devices.push({ user, device:0, jid })						
-						   if(meDevice !== undefined && meDevice !== 0) {					
-						   	devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});						
-							devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
-							if(isRemotejid)
-								{
-								const additionalDevices = await getUSyncDevices([jid, meId], !!useUserDevicesCache, true);
+						    devices.push({ user, device:0, jid })					
+						   if(meDevice !== undefined && meDevice !== 0) {				
+						   					
+							    if(!isLidUser(jid))
+								{							
+								devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});	
+								devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});		
+								const additionalDevices = await getUSyncDevices([jid, meId , meLid], !!useUserDevicesCache, true);
 								devices.push(...additionalDevices); 
-
 								}
 								else
-								{
+								{										
+								devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
 								const additionalDevices = await getUSyncDevices([jid, meLid], !!useUserDevicesCache, true);
 								devices.push(...additionalDevices);    
 								}      											
@@ -633,7 +608,7 @@ const lidCache = new NodeCache({
 					stanza.attrs.to = participant.jid
 				}
 			} else {
-				stanza.attrs.to = isRemotejid || destinationJid
+				stanza.attrs.to =  destinationJid
 			}
 
 			if (shouldIncludeDeviceIdentity) {
