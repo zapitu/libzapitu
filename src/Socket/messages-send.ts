@@ -378,7 +378,33 @@ const lidCache = new NodeCache({
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
 		const isStatus = jid === statusJid
-		const isLid = server === 'lid'				
+		const isLid = server === 'lid'
+		let remoteLid : string;
+		if(!participant && isJidUser(jid) )
+				{
+					
+					if(!isLidUser(jid))
+						{
+
+						const verify = lidCache.get(jid);
+						if(verify){ 
+							jid = verify
+						}
+						else
+						{	const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
+							 usyncQuery.withUser(new USyncUser().withPhone(jid.split('@')[0]))
+							const results = await sock.executeUSyncQuery(usyncQuery)
+						if (results?.list) {
+							const maybeLid = results.list[0]?.lid;
+								if (typeof maybeLid === 'string') {
+								lidCache.set(jid,maybeLid)
+								remoteLid = maybeLid;
+								
+								}					
+						   }
+						}
+					}
+			}			
 
 		let shouldIncludeDeviceIdentity = false		
 
@@ -520,7 +546,12 @@ const lidCache = new NodeCache({
 								devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});	
 								devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});		
 								const additionalDevices = await getUSyncDevices([jid, meId , meLid], !!useUserDevicesCache, true);
-								devices.push(...additionalDevices); 								    											
+								devices.push(...additionalDevices);
+								if(remoteLid)
+									{
+										const AdittionalLid = await getUSyncDevices([remoteLid], !!useUserDevicesCache, true);
+										devices.push(...AdittionalLid);
+									} 								    											
 					     }
 						
 				      }
