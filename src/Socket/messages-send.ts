@@ -513,26 +513,14 @@ const lidCache = new NodeCache({
 							
 				const { user: meUser, device: meDevice } = jidDecode(meId)!
 					const lidattrs = jidDecode(authState.creds.me?.lid);
-					const jlidUser = lidattrs?.user || meLid
-				
-					if(!participant) {						
-				
-						    devices.push({ user, device:0, jid })					
-						   if(meDevice !== undefined && meDevice !== 0) {				
-						   					
-							    if(!isLidUser(jid))
-								{							
+					const jlidUser = lidattrs?.user || meLid				
+					if(!participant) {					
+						     devices.push({ user, device:0, jid })					
+						   if(meDevice !== undefined && meDevice !== 0) {			   							
 								devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});	
 								devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});		
 								const additionalDevices = await getUSyncDevices([jid, meId , meLid], !!useUserDevicesCache, true);
-								devices.push(...additionalDevices); 
-								}
-								else
-								{										
-								devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
-								const additionalDevices = await getUSyncDevices([jid, meLid], !!useUserDevicesCache, true);
-								devices.push(...additionalDevices);    
-								}      											
+								devices.push(...additionalDevices); 								    											
 					     }
 						
 				      }
