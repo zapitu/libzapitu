@@ -388,7 +388,7 @@ const lidCache = new NodeCache({
 
 						const verify = lidCache.get(jid);
 						if(verify){ 
-							jid = verify
+							remoteLid = verify
 						}
 						else
 						{	const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
