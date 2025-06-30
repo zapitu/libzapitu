@@ -375,6 +375,8 @@ const lidCache = new NodeCache({
 		const meId = authState.creds.me!.id
 		const meLid =  authState.creds.me!.lid || authState.creds.me!.id
 		let isRemotejid : string;
+		const lidattrs = jidDecode(authState.creds.me?.lid);
+		const jlidUser = lidattrs?.user
 		if(!participant && isJidUser(jid) )
 				{
 					isRemotejid = jid;
@@ -468,8 +470,7 @@ const lidCache = new NodeCache({
 				])
 
 				if (!participant) {
-				   const participantsList = (groupData && !isStatus) ? groupData.participants.map(p => p.lid || p.id)
-				    .filter((id): id is string => typeof id === 'string'): [];
+				   const participantsList = (groupData && !isStatus) ? groupData.participants.map(p => p.lid || p.id): [];
 					if (isStatus && statusJidList) {
 						participantsList.push(...statusJidList)
 					}
@@ -483,6 +484,11 @@ const lidCache = new NodeCache({
 
 					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
 					devices.push(...additionalDevices)
+					const Mephone = additionalDevices.some(d => d.user === jlidUser && d.device === 0);
+					if (!Mephone) {
+						devices.push({ user: jlidUser!, device: 0, jid: jidNormalizedUser(meLid) });
+					}
+
 				}
 
 				const patched = await patchMessageBeforeSending(message)
@@ -540,8 +546,7 @@ const lidCache = new NodeCache({
 			} else {
 							
 				const { user: meUser, device: meDevice } = jidDecode(meLid)!
-					const lidattrs = jidDecode(authState.creds.me?.lid);
-					const jlidUser = lidattrs?.user
+					
 				
 					if(!participant) {						
 				
