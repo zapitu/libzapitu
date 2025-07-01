@@ -509,10 +509,10 @@ const lidCache = new NodeCache({
 					for(const { user, device, jid } of devices) {
 						const server = jidDecode(jid)?.server || 'lid' ;
 						const senderId = jidEncode(user, server, device)						
-						if (!senderKeyMap[senderId] || !!participant) {
+						
 						senderKeyJids.push(senderId)
 						senderKeyMap[senderId] = true
-					}
+					
 						
 				}
 
