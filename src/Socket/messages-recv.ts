@@ -594,7 +594,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
 		const remoteJid = key.remoteJid!
 		const participant = key.participant || remoteJid
-		const sendToAll = !jidDecode(participant)?.device	
+		const sendToAll = !jidDecode(participant)?.device
+		if (isJidGroup(remoteJid)) {
+			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
+		}	
 
 		for (const [i, msg] of msgs.entries()) {
 			if (msg) {

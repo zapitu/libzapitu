@@ -528,7 +528,7 @@ const lidCache = new NodeCache({
 						}
 					}
 
-					await assertSessions(senderKeyJids, false)
+					await assertSessions(senderKeyJids, isretry ? true : false)
 
 					const result = await createParticipantNodes(senderKeyJids, senderKeyMsg, extraAttrs)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
