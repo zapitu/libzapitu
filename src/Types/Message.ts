@@ -9,11 +9,19 @@ import { CacheStore } from './Socket'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
-export type WAMessage = proto.IWebMessageInfo
+export type WAMessage = proto.IWebMessageInfo & { key: WAMessageKey }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
 export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage
-export type WAMessageKey = proto.IMessageKey & { sender_lid?: string; participant_lid?: string; sender_pn?: string }
+export type WAMessageKey = proto.IMessageKey & {
+	sender_lid?: string
+	server_id?: string
+	sender_pn?: string
+	participant_lid?: string
+	participant_pn?: string
+	isViewOnce?: boolean
+	/// deixar da mesma maneira que vem no node.
+}
 export type WATextMessage = proto.Message.IExtendedTextMessage
 export type WAContextInfo = proto.IContextInfo
 export type WALocationMessage = proto.Message.ILocationMessage
@@ -239,8 +247,7 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	/** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
 	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
-	statusJidList?: string[]
-	
+	statusJidList?: string[],
 	isretry?: boolean
 }
 
@@ -289,6 +296,7 @@ export type MediaGenerationOptions = {
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
 	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
 	getProfilePicUrl?: (jid: string, type: 'image' | 'preview') => Promise<string | undefined>
+	jid?: string
 }
 export type MessageGenerationOptions = MessageContentGenerationOptions & MessageGenerationOptionsFromContent
 

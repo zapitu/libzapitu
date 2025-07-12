@@ -27,7 +27,8 @@ import {
 	getWAUploadToServer,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
-	unixTimestampSeconds
+	unixTimestampSeconds,
+	convertlidDevice
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import {
@@ -243,16 +244,20 @@ const lidCache = new NodeCache({
 		return deviceResults
 	}
 
-	const assertSessions = async (jids: string[], force: boolean) => {
+	
+	const assertSessions = async (jids: string[], force: boolean, lids?: string) => {
 		let didFetchNewSession = false
+		const melid = jidNormalizedUser(authState.creds.me?.lid)
+		const meid = jidNormalizedUser(authState.creds.me?.id)
 		let jidsRequiringFetch: string[] = []
 		if (force) {
 			jidsRequiringFetch = jids
 		} else {
-			const addrs = jids.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
+
+			const addrs = jids.map(jid => signalRepository.jidToSignalProtocolAddress(convertlidDevice(jid,lids,meid,melid)))
 			const sessions = await authState.keys.get('session', addrs)
 			for (const jid of jids) {
-				const signalId = signalRepository.jidToSignalProtocolAddress(jid)
+				const signalId = signalRepository.jidToSignalProtocolAddress(convertlidDevice(jid,lids,meid,melid))
 				if (!sessions[signalId]) {
 					jidsRequiringFetch.push(jid)
 				}
@@ -279,7 +284,7 @@ const lidCache = new NodeCache({
 					}
 				]
 			})
-			await parseAndInjectE2ESessions(result, signalRepository)
+			await parseAndInjectE2ESessions(result, signalRepository, lids, meid, melid)
 
 			didFetchNewSession = true
 		}
@@ -315,7 +320,7 @@ const lidCache = new NodeCache({
 		return msgId
 	}
 
-	const createParticipantNodes = async (jids: string[], message: proto.IMessage, extraAttrs?: BinaryNode['attrs']) => {
+	const createParticipantNodes = async (jids: string[], message: proto.IMessage, extraAttrs?: BinaryNode['attrs'], lid?, meid?, melid?) => {
 		let patched = await patchMessageBeforeSending(message, jids)
 		if (!Array.isArray(patched)) {
 			patched = jids ? jids.map(jid => ({ recipientJid: jid, ...patched })) : [patched]
@@ -331,7 +336,7 @@ const lidCache = new NodeCache({
 				}
 
 				const bytes = encodeWAMessage(patchedMessage)
-				const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+				const { type, ciphertext } = await signalRepository.encryptMessage({ jid: convertlidDevice(jid,lid,meid,melid), data: bytes })
 				if (type === 'pkmsg') {
 					shouldIncludeDeviceIdentity = true
 				}
@@ -357,6 +362,28 @@ const lidCache = new NodeCache({
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
+	const getLid = async (jid: string): Promise<string | null> => {
+	const cachedLid = lidCache.get(jid);
+	if (cachedLid) {
+		return cachedLid;
+	}	
+	const usyncQuery = new USyncQuery()
+		.withContactProtocol()
+		.withLIDProtocol()
+		.withUser(new USyncUser().withPhone(jid.split('@')[0]));	
+	const results = await sock.executeUSyncQuery(usyncQuery);	
+	if (results?.list) {
+		const maybeLid = results.list[0]?.lid;	
+		if (typeof maybeLid === 'string') {
+		lidCache.set(jid, maybeLid);
+		return maybeLid;
+		}
+	}
+	return null;
+	};
+
+
+
 	const relayMessage = async (
 		jid: string,
 		message: proto.IMessage,
@@ -373,30 +400,30 @@ const lidCache = new NodeCache({
 	
 	) => {
 		const meId = authState.creds.me!.id
-		const meLid =  authState.creds.me!.lid || authState.creds.me!.id
-		let isRemotejid : string;
+		const meLid =  authState.creds.me!.lid || authState.creds.me!.id		
 		const lidattrs = jidDecode(authState.creds.me?.lid);
 		const jlidUser = lidattrs?.user
-		if(!participant && isJidUser(jid) )
+		let  lids: string
+		if(isJidUser(jid) || isJidUser(participant?.jid) )
 				{
-					isRemotejid = jid;
-					if(!isLidUser(jid))
+					const userQuery =  jidNormalizedUser(participant?.jid || jid)
+
+					if(!isLidUser(userQuery))
 						{
 
-						const verify = lidCache.get(jid);
+						const verify = lidCache.get(userQuery);
 						if(verify){ 
-							jid = verify
+							lids = verify
 						}
 						else
 						{	const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
-							 usyncQuery.withUser(new USyncUser().withPhone(jid.split('@')[0]))
+							 usyncQuery.withUser(new USyncUser().withPhone(userQuery.split('@')[0]))
 							const results = await sock.executeUSyncQuery(usyncQuery)
 						if (results?.list) {
 							const maybeLid = results.list[0]?.lid;
 								if (typeof maybeLid === 'string') {
-								lidCache.set(jid,maybeLid)
-								jid = maybeLid;
-								
+								lidCache.set(userQuery,maybeLid)
+								lids = maybeLid;								
 								}					
 						   }
 						}
@@ -418,14 +445,14 @@ const lidCache = new NodeCache({
 		const destinationJid = !isStatus ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : 's.whatsapp.net') : statusJid
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: JidWithDevice[] = []
-
+		
 		const meMsg: proto.IMessage = {
 			deviceSentMessage: {
 				destinationJid,
 				message
 			}
 		}
-           
+		   
 		const extraAttrs = {}
 
 		if (participant) {
@@ -508,13 +535,14 @@ const lidCache = new NodeCache({
 				const senderKeyJids: string[] = []
 					for(const { user, device, jid } of devices) {
 						const server = jidDecode(jid)?.server || 'lid' ;
-						const senderId = jidEncode(user, server, device)						
-						
+						const senderId = jidEncode(user, server, device)					
 						senderKeyJids.push(senderId)
 						senderKeyMap[senderId] = true
 					
 						
 				}
+				
+				
 
 				// if there are some participants with whom the session has not been established
 				// if there are, we re-send the senderkey
@@ -528,9 +556,9 @@ const lidCache = new NodeCache({
 						}
 					}
 
-					await assertSessions(senderKeyJids, isretry ? true : false)
+					await assertSessions(senderKeyJids, isretry ? true : false, lids)
 
-					const result = await createParticipantNodes(senderKeyJids, senderKeyMsg, extraAttrs)
+					const result = await createParticipantNodes(senderKeyJids, senderKeyMsg, extraAttrs, lids, meId, meLid)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					participants.push(...result.nodes)
@@ -548,30 +576,29 @@ const lidCache = new NodeCache({
 				const { user: meUser, device: meDevice } = jidDecode(meId)!
 					
 				
-					if(!participant) {						
+					if(!participant) {				
 				
-
 						devices.push({ user, device:0, jid })						
 						if(meDevice !== undefined && meDevice !== 0) {						
 						   
 						   if(isLidUser(jid) && jlidUser)
 						   {							
 							devices.push({ user: jlidUser, device: 0, jid:  jidNormalizedUser(meLid)});
-							const additionalDevices = await getUSyncDevices([ jid, meLid], !!useUserDevicesCache, true)
+							const additionalDevices = await getUSyncDevices([ jid, meLid], !!useUserDevicesCache, true);
 							devices.push(...additionalDevices);							
 						   }
 						   else
 						   {
-						   devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});
+						   devices.push({ user: meUser, device:0, jid:  jidNormalizedUser(meId)});						   
 						   const additionalDevices = await getUSyncDevices([ jid, meId], !!useUserDevicesCache, true)
 						   devices.push(...additionalDevices);	
 						   }					
-					    
+						
 					}
 						
 				}
 
-				    const allJids: string[] = []
+					const allJids: string[] = []
 					const meJids: string[] = []
 					const otherJids: string[] = []
 					for(const { user, device, jid} of devices) {
@@ -588,15 +615,15 @@ const lidCache = new NodeCache({
 							}
 						   allJids.push(senderId)
 					}
-              
-					await assertSessions(allJids, isretry ? true : false);
+			  
+					await assertSessions(allJids, isretry ? true : false, lids);
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					createParticipantNodes(meJids, meMsg, extraAttrs),
-					createParticipantNodes(otherJids, message, extraAttrs)
+					createParticipantNodes(meJids, meMsg, extraAttrs, lids, meId, meLid),
+					createParticipantNodes(otherJids, message, extraAttrs, lids, meId, meLid)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
@@ -642,7 +669,7 @@ const lidCache = new NodeCache({
 					stanza.attrs.to = participant.jid
 				}
 			} else {
-				stanza.attrs.to = isRemotejid || destinationJid
+				stanza.attrs.to =  destinationJid
 			}
 
 			if (shouldIncludeDeviceIdentity) {

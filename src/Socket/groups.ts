@@ -13,6 +13,8 @@ import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	getBinaryNodeChildString,
+	isJidUser,
+	isLidUser,
 	jidEncode,
 	jidNormalizedUser
 } from '../WABinary'
@@ -333,6 +335,7 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 		creation: +group.attrs.creation,
 		owner: group.attrs.creator ? jidNormalizedUser(group.attrs.creator) : undefined,
 		ownerJid: group.attrs.creator_pn ? jidNormalizedUser(group.attrs.creator_pn) : undefined,
+		owner_country_code: group.attrs.creator_country_code,
 		desc,
 		descId,
 		descOwner,
@@ -348,12 +351,14 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 		participants: getBinaryNodeChildren(group, 'participant').map(({ attrs }) => {
 			return {
 				id: attrs.jid,
-				jid: attrs.phone_number ? jidNormalizedUser(attrs.phone_number) : undefined,
-				admin: (attrs.type || null) as GroupParticipant['admin'],
-				lid: attrs.lid
+				jid: isJidUser(attrs.jid) ? attrs.jid : jidNormalizedUser(attrs.phone_number),
+				lid: isLidUser(attrs.jid) ? attrs.jid : attrs.lid,
+				admin: (attrs.type || null) as GroupParticipant['admin']
 			}
 		}),
 		ephemeralDuration: eph ? +eph : undefined
 	}
 	return metadata
 }
+
+export type GroupsSocket = ReturnType<typeof makeGroupsSocket>

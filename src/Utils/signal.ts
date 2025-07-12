@@ -23,6 +23,8 @@ import {
 import { DeviceListData, ParsedDeviceInfo, USyncQueryResultList } from '../WAUSync'
 import { Curve, generateSignalPubKey } from './crypto'
 import { encodeBigEndian } from './generics'
+import { convertlidDevice } from './messages'
+
 
 export const createSignalIdentity = (wid: string, accountSignatureKey: Uint8Array): SignalIdentity => {
 	return {
@@ -77,7 +79,7 @@ export const xmppPreKey = (pair: KeyPair, id: number): BinaryNode => ({
 	]
 })
 
-export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: SignalRepository) => {
+export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: SignalRepository, lid?: string | null | undefined, meid?: string, melid?:string) => {
 	const extractKey = (key: BinaryNode) =>
 		key
 			? {
@@ -105,10 +107,11 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 				const key = getBinaryNodeChild(node, 'key')!
 				const identity = getBinaryNodeChildBuffer(node, 'identity')!
 				const jid = node.attrs.jid
-				const registrationId = getBinaryNodeChildUInt(node, 'registration', 4)
+				const registrationId = getBinaryNodeChildUInt(node, 'registration', 4);
+				const newlid = convertlidDevice(jid, lid, meid, melid)
 
 				await repository.injectE2ESession({
-					jid,
+					jid: newlid,
 					session: {
 						registrationId: registrationId!,
 						identityKey: generateSignalPubKey(identity),
