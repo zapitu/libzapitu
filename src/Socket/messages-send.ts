@@ -2,6 +2,7 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import ListType = proto.Message.ListMessage.ListType;
 import {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -28,7 +29,8 @@ import {
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds,
-	convertlidDevice
+	convertlidDevice,
+	getContentType
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import {
@@ -685,6 +687,41 @@ const lidCache = new NodeCache({
 			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
+			const content = normalizeMessageContent(message)!
+				const contentType = getContentType(content)!
+
+				if((isJidGroup(jid) || isJidUser(jid))  || isLidUser(jid) && (
+					contentType === 'interactiveMessage' ||
+					contentType === 'buttonsMessage' ||
+					contentType === 'listMessage'
+				)) {
+					const bizNode: BinaryNode = { tag: 'biz', attrs: {} }
+
+					if((message?.viewOnceMessage?.message?.interactiveMessage || message?.viewOnceMessageV2?.message?.interactiveMessage || message?.viewOnceMessageV2Extension?.message?.interactiveMessage || message?.interactiveMessage) || (message?.viewOnceMessage?.message?.buttonsMessage || message?.viewOnceMessageV2?.message?.buttonsMessage || message?.viewOnceMessageV2Extension?.message?.buttonsMessage || message?.buttonsMessage)) {
+						bizNode.content = [{
+							tag: 'interactive',
+							attrs: {
+								type: 'native_flow',
+								v: '1'
+							},
+							content: [{
+								tag: 'native_flow',
+								attrs: { v: '9', name: 'mixed' }
+							}]
+						}]
+					} else if(message?.listMessage) {
+						// list message only support in private chat
+						bizNode.content = [{
+							tag: 'list',
+							attrs: {
+								type: 'product_list',
+								v: '2'
+							}
+						}]
+					}
+
+					(stanza.content as BinaryNode[]).push(bizNode)
+				}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
@@ -733,6 +770,36 @@ const lidCache = new NodeCache({
 			return 'native_flow_response'
 		} else if (message.groupInviteMessage) {
 			return 'url'
+		}
+	}
+
+		const getButtonType = (message: proto.IMessage) => {
+		if(message.buttonsMessage) {
+			return 'buttons'
+		} else if(message.buttonsResponseMessage) {
+			return 'buttons_response'
+		} else if(message.interactiveResponseMessage) {
+			return 'interactive_response'
+		} else if(message.listMessage) {
+			return 'list'
+		} else if(message.listResponseMessage) {
+			return 'list_response'
+		}
+	}
+
+	const getButtonArgs = (message: proto.IMessage): BinaryNode['attrs'] => {
+		if(message.templateMessage) {
+			// TODO: Add attributes
+			return {}
+		} else if(message.listMessage) {
+			const type = message.listMessage.listType
+			if(!type) {
+				throw new Boom('Expected list type inside message')
+			}
+
+			return { v: '2', type: ListType[type].toLowerCase() }
+		} else {
+			return {}
 		}
 	}
 
