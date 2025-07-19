@@ -51,12 +51,14 @@ import {
 	isJidGroup,
 	isJidStatusBroadcast,
 	isJidUser,
+	isLidUser,
 	jidDecode,
 	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
+
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const { logger, retryRequestDelayMs, maxMsgRetryCount, getMessage, shouldIgnoreJid } = config
@@ -937,11 +939,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleCall = async (node: BinaryNode) => {
+		let status
 		const { attrs } = node
 		const [infoChild] = getAllBinaryNodeChildren(node)
 		const callId = infoChild.attrs['call-id']
 		const from = infoChild.attrs.from || infoChild.attrs['call-creator']
-		const status = getCallStatusFromNode(infoChild)
+		status = getCallStatusFromNode(infoChild)
+		if(isLidUser(from) && infoChild.tag==='relaylatency')
+		{
+			const verify = callOfferCache.get(callId);
+			if(!verify)
+			{
+				status = 'offer';
+				callOfferCache.set(callId,true);
+			}
+
+		}
 		const call: WACallEvent = {
 			chatId: attrs.from,
 			from,
@@ -969,6 +982,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// delete data once call has ended
 		if (status === 'reject' || status === 'accept' || status === 'timeout' || status === 'terminate') {
 			callOfferCache.del(call.id)
+			if(isLidUser(from))
+			{
+			 callOfferCache.del(from)	
+			}
 		}
 
 		ev.emit('call', [call])
