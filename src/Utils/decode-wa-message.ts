@@ -63,6 +63,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const sender_lid: string | undefined = stanza.attrs.sender_lid
 	const recipient: string | undefined = stanza.attrs.recipient
 	const sender_pn: string | undefined = stanza?.attrs?.sender_pn
+	const peer_recipient_pn: string | undefined = stanza?.attrs?.peer_recipient_pn
 	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
 
 		if (isJidUser(from) || isLidUser(from)) {
@@ -154,6 +155,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		...(participant && { participant }),
 		...(participant_lid && { participant_lid }),
 		...(sender_pn && { sender_pn }),
+		...(peer_recipient_pn && { peer_recipient_pn }),
 	};
 
 	const fullMessage: proto.IWebMessageInfo = {
