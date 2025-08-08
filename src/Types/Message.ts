@@ -17,6 +17,7 @@ export type WAMessageKey = proto.IMessageKey & {
 	sender_lid?: string
 	server_id?: string
 	sender_pn?: string
+	peer_recipient_pn?: string
 	participant_lid?: string
 	participant_pn?: string
 	isViewOnce?: boolean

@@ -60,6 +60,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const isMe = (jid: string) => areJidsSameUser(jid, meId)
 	const isMeLid = (jid: string) => areJidsSameUser(jid, meLid)
 	const participant_lid: string | undefined = stanza.attrs.participant_lid
+	const participant_pn: string | undefined = stanza?.attrs?.participant_pn
 	const sender_lid: string | undefined = stanza.attrs.sender_lid
 	const recipient: string | undefined = stanza.attrs.recipient
 	const sender_pn: string | undefined = stanza?.attrs?.sender_pn
@@ -153,6 +154,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		id: msgId,
 		...(sender_lid && { sender_lid }),
 		...(participant && { participant }),
+		...(participant_pn && { participant_pn }),
 		...(participant_lid && { participant_lid }),
 		...(sender_pn && { sender_pn }),
 		...(peer_recipient_pn && { peer_recipient_pn }),
