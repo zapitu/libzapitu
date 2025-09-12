@@ -1,10 +1,11 @@
 <h1><img alt="Baileys logo" src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" height="75"/></h1>
 
-![NPM Downloads](https://img.shields.io/npm/dw/%40whiskeysockets%2Fbaileys?label=npm&color=%23CB3837)
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/whiskeysockets/baileys)
-![Discord](https://img.shields.io/discord/725839806084546610?label=discord&color=%235865F2)
-
-Baileys is a WebSockets-based TypeScript library for interacting with the WhatsApp Web API.
+<b> Para o bom funcionamento deste repositório, é necessário:</b>
+<ul>
+  <li>Ler novamente o qrCode</li>
+  <li><b>Não usar makeCacheableSignalKeyStore nas configurações do socket</b></li>
+  <li> Certificar que o seu getMessage esteja funcionando plenamente</li>
+</ul>
 
 # Usage
 A new guide has been posted at https://baileys.wiki. The old guide can be accessed on [NPM](https://npmjs.com/package/baileys).
