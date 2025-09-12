@@ -1,17 +1,18 @@
 <h1><img alt="Baileys logo" src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" height="75"/></h1>
 
-<b> Para o bom funcionamento deste repositório, é necessário:</b>
-<ul>
-  <li>Ler novamente o qrCode</li>
-  <li><b>Não usar makeCacheableSignalKeyStore nas configurações do socket</b></li>
-  <li> Certificar que o seu getMessage esteja funcionando plenamente</li>
-</ul>
+<b>Requisitos para o funcionamento correto deste repositório:</b>
+
+<ul> <li>Efetuar novamente a leitura do <b>QR Code</b> para autenticação</li> <li><b>Não utilizar</b> <code>makeCacheableSignalKeyStore</code> na configuração do socket</li> <li>Garantir que a função <code>getMessage</code> esteja implementada e funcionando corretamente</li> </ul>
+
+
 
 # Usage
 A new guide has been posted at https://baileys.wiki. The old guide can be accessed on [NPM](https://npmjs.com/package/baileys).
 
-# Sponsor
-If you'd like to financially support this project, you can do so by supporting the current maintainer [here](https://purpshell.dev/sponsor).
+# Contribua
+Se este repositório te ajudou de alguma forma, faça sua retribuioção e ajude a manter atualizado:
+pix/support: (64) 99213-4371
+
 
 # Disclaimer
 This project is not affiliated, associated, authorized, endorsed by, or in any way officially connected with WhatsApp or any of its subsidiaries or its affiliates.
