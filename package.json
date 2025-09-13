@@ -1,17 +1,17 @@
 {
-  "name": "baileys",
-  "version": "6.7.18",
+  "name": "libzapitu-rf",
+  "version": "1.0.0-alpha.0",
   "description": "A WebSockets library for interacting with WhatsApp Web",
   "keywords": [
     "whatsapp",
     "automation"
   ],
-  "homepage": "https://github.com/WhiskeySockets/Baileys/",
+  "homepage": "https://github.com/zapitu/libzapitu/tree/rf",
   "repository": {
-    "url": "git@github.com:WhiskeySockets/Baileys.git"
+    "url": "git@github.com/zapitu/libzapitu.git#rf"
   },
   "license": "MIT",
-  "author": "Rajeh Taher",
+  "author": "Zapitu Project",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
