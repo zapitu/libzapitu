@@ -13,6 +13,7 @@ docs
 lib
 messages*.json
 node_modules
+package-lock.json
 output.csv
 Proxy
 test.ts
