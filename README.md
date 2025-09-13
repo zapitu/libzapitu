@@ -1,22 +1,22 @@
-<h1 align='center'><img alt="Baileys logo" src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" height="75"/></h1>
+# libzapitu-rf
 
-<div align='center'>
+LibZapitu is a WebSockets-based TypeScript library for interacting with the WhatsApp Web API.
 
-![NPM Downloads](https://img.shields.io/npm/dw/%40whiskeysockets%2Fbaileys?label=npm&color=%23CB3837)
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/whiskeysockets/baileys)
-![Discord](https://img.shields.io/discord/725839806084546610?label=discord&color=%235865F2)
+It is forked from [Baileys](https://github.com/WhiskeySockets/Baileys) before the changes to ESM and implements better compatibility to the new privacy of phone numbers from Whatsapp.
 
-</div>
+# Sponsor the author 
 
-<div align='center'>Baileys is a WebSockets-based TypeScript library for interacting with the WhatsApp Web API.</div>
+Work on this fork is mostly from [Renato Freitas](https://github.com/renatoiub)
 
-# Important Note
-This is a temporally README, the new guide is at development and will be fully released when it's finished.
+You can help this project keeping on sending him a beer:
 
-New Guide: https://baileys.wiki
+PIX (Brazil Only): 
 
-# Sponsor
-If you'd like to financially support this project, you can do so by supporting the current maintainer [here](https://purpshell.dev/sponsor).
+```
+c8181415-2b7d-4e2e-b600-0704e629672b
+```
+
+<img width="280" height="280" alt="Image" src="https://github.com/user-attachments/assets/d7c898af-ef03-4264-b013-156d27050c33" />
 
 # Disclaimer
 This project is not affiliated, associated, authorized, endorsed by, or in any way officially connected with WhatsApp or any of its subsidiaries or its affiliates.
@@ -48,25 +48,16 @@ To run the example script, download or clone the repo and then type the followin
 
 ## Install
 
-Use the stable version:
+Use the currently-alpha version:
 ```
-yarn add @whiskeysockets/baileys
+npm install libzapitu-rf
 ```
 
-Use the edge version (no guarantee of stability, but latest fixes + features)
-```
-yarn add github:WhiskeySockets/Baileys
-```
 
 Then import your code using:
 ```ts 
-import makeWASocket from '@whiskeysockets/baileys'
+import makeWASocket from 'libzapitu-rf'
 ```
-
-# Links
-
-- [Discord](https://discord.gg/WeJM5FP9GG)
-- [Docs](https://guide.whiskeysockets.io/)
 
 # Index
 
