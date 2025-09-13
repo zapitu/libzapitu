@@ -1,6 +1,6 @@
 {
   "name": "libzapitu-rf",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0-alpha.1",
   "description": "A WebSockets library for interacting with WhatsApp Web",
   "keywords": [
     "whatsapp",
@@ -76,7 +76,7 @@
     "typescript": "^5.8.2"
   },
   "peerDependencies": {
-    "audio-decode": "^2.1.3",
+    "audio-decode": "^2.2.3",
     "jimp": "^1.6.0",
     "link-preview-js": "^3.0.0",
     "sharp": "^0.34.2"
