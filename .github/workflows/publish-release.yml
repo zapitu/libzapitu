@@ -53,7 +53,7 @@ jobs:
           npm publish --access public --//registry.npmjs.org/:_authToken=$NPM_AUTH_TOKEN
           npx json -I -f package.json -e "this.name='zapitu-rf'"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Generate Changelog
         id: generate_changelog
