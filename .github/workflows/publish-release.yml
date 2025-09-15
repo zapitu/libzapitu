@@ -46,14 +46,12 @@ jobs:
 
       - name: Publish in NPM (as `libzapitu-rf` and aliases)
         run: |
-          npm publish --access public --//registry.npmjs.org/:_authToken=$NPM_AUTH_TOKEN
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
           npx json -I -f package.json -e "this.name='libzapitu'"
-          npm publish --access public --//registry.npmjs.org/:_authToken=$NPM_AUTH_TOKEN
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
           npx json -I -f package.json -e "this.name='zapitu'"
-          npm publish --access public --//registry.npmjs.org/:_authToken=$NPM_AUTH_TOKEN
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
           npx json -I -f package.json -e "this.name='zapitu-rf'"
-        env:
-          NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Generate Changelog
         id: generate_changelog
