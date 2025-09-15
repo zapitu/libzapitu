@@ -45,9 +45,5 @@ jobs:
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Build (opcional)
-        run: yarn build
-        if: success() && (hashFiles('**/tsconfig.json') != '')
-
       - name: Release
         run: npx release-it --increment ${{ github.event.inputs.increment }}
