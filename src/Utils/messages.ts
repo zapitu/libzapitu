@@ -22,7 +22,7 @@ import {
 	WAProto,
 	WATextMessage
 } from '../Types'
-import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser, jidDecode } from '../WABinary'
+import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidDecode, jidNormalizedUser } from '../WABinary'
 import { sha256 } from './crypto'
 import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
 import { ILogger } from './logger'
@@ -954,21 +954,28 @@ export const assertMediaContent = (content: proto.IMessage | null | undefined) =
 	return mediaContent
 }
 
-export const convertlidDevice = (jid:string, lid: string | null | undefined, meid:string | undefined, melid: string |undefined) =>{
-    const meLiidiser = jidDecode(melid)?.user;
+export const convertlidDevice = (
+	jid: string,
+	lid: string | null | undefined,
+	meid: string | undefined,
+	melid: string | undefined
+) => {
+	const meLiidiser = jidDecode(melid)?.user
 	const mejidUser = jidDecode(meid)?.user
-	const jidUser =  jidDecode(jid)?.user;
-	const jidDevice = jidDecode(jid)?.device;
-	if(jidUser===mejidUser){
-     return  jidDevice ? `${meLiidiser}:${jidDevice}@lid` : `${meLiidiser}@lid`;
-    }
-	if(jidUser===melid)
-	{
+	const jidUser = jidDecode(jid)?.user
+	const jidDevice = jidDecode(jid)?.device
+	if (jidUser === mejidUser) {
+		return jidDevice ? `${meLiidiser}:${jidDevice}@lid` : `${meLiidiser}@lid`
+	}
+
+	if (jidUser === melid) {
 		return jid
 	}
 
-	if(!lid){ return jid}	
-	const lidUser = jidDecode(lid)?.user;		
-	return  jidDevice ? `${lidUser}:${jidDevice}@lid` : `${lidUser}@lid`;
+	if (!lid) {
+		return jid
 	}
 
+	const lidUser = jidDecode(lid)?.user
+	return jidDevice ? `${lidUser}:${jidDevice}@lid` : `${lidUser}@lid`
+}

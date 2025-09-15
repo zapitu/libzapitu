@@ -59,7 +59,6 @@ import {
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
-
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const { logger, retryRequestDelayMs, maxMsgRetryCount, getMessage, shouldIgnoreJid } = config
 	const sock = makeMessagesSocket(config)
@@ -73,6 +72,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		upsertMessage,
 		resyncAppState,
 		onUnexpectedError,
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		assertSessions,
 		sendNode,
 		relayMessage,
@@ -618,14 +618,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		for (const [i, msg] of msgs.entries()) {
 			if (msg) {
 				updateSendMessageAgainCount(ids[i], participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], isretry:true }				
-					msgRelayOpts.participant = {
-						jid: participant,
-						count: +retryNode.attrs.count					
-					
+				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], isretry: true }
+				msgRelayOpts.participant = {
+					jid: participant,
+					count: +retryNode.attrs.count
 				}
 
-				await relayMessage(key.remoteJid!, msg, msgRelayOpts,)
+				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -945,16 +944,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const callId = infoChild.attrs['call-id']
 		const from = infoChild.attrs.from || infoChild.attrs['call-creator']
 		status = getCallStatusFromNode(infoChild)
-		if(isLidUser(from) && infoChild.tag==='relaylatency')
-		{
-			const verify = callOfferCache.get(callId);
-			if(!verify)
-			{
-				status = 'offer';
-				callOfferCache.set(callId,true);
+		if (isLidUser(from) && infoChild.tag === 'relaylatency') {
+			const verify = callOfferCache.get(callId)
+			if (!verify) {
+				status = 'offer'
+				callOfferCache.set(callId, true)
 			}
-
 		}
+
 		const call: WACallEvent = {
 			chatId: attrs.from,
 			from,
@@ -982,9 +979,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// delete data once call has ended
 		if (status === 'reject' || status === 'accept' || status === 'timeout' || status === 'terminate') {
 			callOfferCache.del(call.id)
-			if(isLidUser(from))
-			{
-			 callOfferCache.del(from)	
+			if (isLidUser(from)) {
+				callOfferCache.del(from)
 			}
 		}
 

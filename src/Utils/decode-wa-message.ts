@@ -67,61 +67,52 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const peer_recipient_pn: string | undefined = stanza?.attrs?.peer_recipient_pn
 	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
 
-		if (isJidUser(from) || isLidUser(from)) {
+	if (isJidUser(from) || isLidUser(from)) {
 		if (recipient && !isJidMetaIa(recipient)) {
 			if (!isMe(from) && !isMeLid(from)) {
-			throw new Boom('recipient present, but msg not from me', { data: stanza });
+				throw new Boom('recipient present, but msg not from me', { data: stanza })
 			}
-			chatId = recipient;
+
+			chatId = recipient
 		} else {
-			chatId = from || sender_lid;
+			chatId = from || sender_lid
 		}
 
-		msgType = 'chat';
+		msgType = 'chat'
 
-		const deviceOrigem = jidDecode(from)?.device;
+		const deviceOrigem = jidDecode(from)?.device
 
 		if (fromMe) {
-			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user;
-			author = deviceOrigem
-			? `${userDestino}:${deviceOrigem}@lid`
-			: `${userDestino}@lid`;
+			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user
+			author = deviceOrigem ? `${userDestino}:${deviceOrigem}@lid` : `${userDestino}@lid`
 		} else {
 			if (!sender_lid) {
-			author = from;
+				author = from
 			} else {
-			const userDestino = jidDecode(sender_lid)?.user;
+				const userDestino = jidDecode(sender_lid)?.user
 
-			author = deviceOrigem
-				? `${userDestino}:${deviceOrigem}@lid`
-				: `${userDestino}@lid`;
+				author = deviceOrigem ? `${userDestino}:${deviceOrigem}@lid` : `${userDestino}@lid`
 			}
 		}
-		}
- else if (isJidGroup(from)) {
+	} else if (isJidGroup(from)) {
 		if (!participant) {
 			throw new Boom('No participant in group message')
 		}
 
 		msgType = 'group'
 		chatId = from || sender_lid
-		const deviceOrigem = jidDecode(participant)?.device;
+		const deviceOrigem = jidDecode(participant)?.device
 		if (fromMe) {
-			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user;
-			author = deviceOrigem
-			? `${userDestino}:${deviceOrigem}@lid`
-			: `${userDestino}@lid`;
+			const userDestino = jidDecode(jidNormalizedUser(meLid))?.user
+			author = deviceOrigem ? `${userDestino}:${deviceOrigem}@lid` : `${userDestino}@lid`
 		} else {
 			if (!participant_lid) {
-			author = participant;
+				author = participant
 			} else {
-			const userDestino = jidDecode(participant_lid)?.user;
-			author = deviceOrigem
-				? `${userDestino}:${deviceOrigem}@lid`
-				: `${userDestino}@lid`;
+				const userDestino = jidDecode(participant_lid)?.user
+				author = deviceOrigem ? `${userDestino}:${deviceOrigem}@lid` : `${userDestino}@lid`
 			}
 		}
-
 	} else if (isJidBroadcast(from)) {
 		if (!participant && participant_lid) {
 			throw new Boom('No participant in group message')
@@ -135,8 +126,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		}
 
 		chatId = from
-		author = participant_lid || participant	 		
-	
+		author = participant_lid || participant
 	} else if (isJidNewsletter(from)) {
 		msgType = 'newsletter'
 		chatId = from
@@ -145,7 +135,6 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		throw new Boom('Unknown message type', { data: stanza })
 	}
 
-	
 	const pushname = stanza?.attrs?.notify
 
 	const key: WAMessageKey = {
@@ -157,8 +146,8 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		...(participant_pn && { participant_pn }),
 		...(participant_lid && { participant_lid }),
 		...(sender_pn && { sender_pn }),
-		...(peer_recipient_pn && { peer_recipient_pn }),
-	};
+		...(peer_recipient_pn && { peer_recipient_pn })
+	}
 
 	const fullMessage: proto.IWebMessageInfo = {
 		key,
