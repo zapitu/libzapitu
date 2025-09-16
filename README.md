@@ -1,8 +1,34 @@
+<h1><img alt="Baileys logo" src="https://raw.githubusercontent.com/zapitu/libzapitu/refs/heads/rf/Media/logo.jpg" height="75"/></h1>
+
 # libzapitu-rf
 
 LibZapitu is a WebSockets-based TypeScript library for interacting with the WhatsApp Web API.
 
 It is forked from [Baileys](https://github.com/WhiskeySockets/Baileys) before the changes to ESM and implements better compatibility to the new privacy of phone numbers from Whatsapp.
+
+# To work with libzapitu it is needed:
+
+* It is suggested to restart the connections reading again their qrcode
+* Do not use `makeCacheableSignalKeystore` on MakeWASocket
+* Be sure that `getMessage` is implemented and working well
+
+# To use libzapitu
+
+## To use libzapitu
+
+```
+npm install libzapitu-rf
+```
+
+## To install libzapitu-rf in place of baileys
+
+To avoid renaming imports from baileys on your existing code you can use npm aliasing function.
+
+Example: if your code uses "baileys" on imports:
+
+```
+npm install baileys@npm:libzapitu-rf
+```
 
 # Sponsor the author 
 
@@ -180,7 +206,7 @@ WhatsApp provides a multi-device API that allows Baileys to be authenticated as 
 > You can customize browser name if you connect with **QR-CODE**, with `Browser` constant, we have some browsers config, **see [here](https://baileys.whiskeysockets.io/types/BrowsersMap.html)**
 
 ```ts
-import makeWASocket from '@whiskeysockets/baileys'
+import makeWASocket from 'libzapitu-rf'
 
 const sock = makeWASocket({
     // can provide additional config here
