@@ -1,0 +1,40 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git
+        run: |
+          git config user.name "Sync Bot"
+          git config user.email "sync-bot@nomail.example.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add rf-upstream https://github.com/renatoiub/wsocket.git
+          git fetch rf-upstream
+
+      # --- Sync main full-history branch ---
+      - name: Merge upstream into rf-fullhistory
+        run: |
+          git checkout rf-fullhistory
+          git merge --ff-only rf-upstream/main || git merge rf-upstream/main -m "Sync from upstream"
+          git push origin rf-fullhistory
+
+      # --- Try syncing your other branch ---
+      - name: Try merge into rf
+        run: |
+          set +e  # Prevent shell from stopping on error
+          git checkout rf
+          git merge --ff-only rf-fullhistory || git merge rf-fullhistory -m "Merged upstream changes" || git merge --abort
+          git push origin rf
