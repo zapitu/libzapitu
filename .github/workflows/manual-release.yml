@@ -8,14 +8,17 @@ on:
         description: "Must be: patch, minor, major, pre* or <version>"
         required: true
         default: "patch"
+
 jobs:
   manual-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.PERSONAL_TOKEN }}
 
       - name: Setup GIT
         run: |
@@ -32,7 +35,7 @@ jobs:
         run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
 
       - uses: actions/cache@v3
-        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
           key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
@@ -40,7 +43,7 @@ jobs:
             ${{ runner.os }}-yarn-
 
       - name: Install Dependencies
-        run: yarn
+        run: yarn install --frozen-lockfile
 
       - name: Release
-        run: "npx release-it --increment ${{ github.event.inputs.increment }}"
+        run: npx release-it --increment ${{ github.event.inputs.increment }}
