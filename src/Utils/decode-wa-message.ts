@@ -65,7 +65,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const recipient: string | undefined = stanza.attrs.recipient
 	const sender_pn: string | undefined = stanza?.attrs?.sender_pn
 	const peer_recipient_pn: string | undefined = stanza?.attrs?.peer_recipient_pn
-	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
+	const fromMe = (isLidUser(from) || isLidUser(participant) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from);
 
 		if (isJidUser(from) || isLidUser(from)) {
 		if (recipient && !isJidMetaIa(recipient)) {
