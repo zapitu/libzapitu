@@ -9,6 +9,7 @@ baileys_store*.json
 browser-messages.json
 browser-token.json
 decoded-ws.json
+package-lock.json
 docs
 lib
 messages*.json
