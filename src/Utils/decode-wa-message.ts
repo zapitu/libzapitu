@@ -16,6 +16,7 @@ import {
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import { ILogger } from './logger'
+import caches from './cache-utils'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
@@ -91,13 +92,19 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 			author = from;
 			} else {
 			const userDestino = jidDecode(sender_lid)?.user;
-
 			author = deviceOrigem
 				? `${userDestino}:${deviceOrigem}@lid`
 				: `${userDestino}@lid`;
 			}
 		}
+		if(sender_lid && sender_pn ){
+		const verify = caches.lidCache.get(jidNormalizedUser(sender_pn));
+		 if(!verify)
+		 {
+			caches.lidCache.set(jidNormalizedUser(sender_pn), jidNormalizedUser(sender_lid))
+		 }
 		}
+	}
  else if (isJidGroup(from)) {
 		if (!participant) {
 			throw new Boom('No participant in group message')
