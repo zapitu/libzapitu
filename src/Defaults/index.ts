@@ -11,6 +11,10 @@ export const DEFAULT_ORIGIN = 'https://web.whatsapp.com'
 export const DEF_CALLBACK_PREFIX = 'CB:'
 export const DEF_TAG_PREFIX = 'TAG:'
 export const PHONE_CONNECTION_CB = 'CB:Pong'
+export const WA_ADV_ACCOUNT_SIG_PREFIX = Buffer.from([6, 0])
+export const WA_ADV_DEVICE_SIG_PREFIX = Buffer.from([6, 1])
+export const WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX = Buffer.from([6, 5])
+export const WA_ADV_HOSTED_DEVICE_SIG_PREFIX = Buffer.from([6, 6])
 
 export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60
 

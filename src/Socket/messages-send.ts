@@ -50,6 +50,7 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
+import caches from '../Utils/cache-utils';
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -406,14 +407,14 @@ const lidCache = new NodeCache({
 		const lidattrs = jidDecode(authState.creds.me?.lid);
 		const jlidUser = lidattrs?.user
 		let  lids: string
-		if(isJidUser(jid) || isJidUser(participant?.jid) )
+				if(isJidUser(jid) || isJidUser(participant?.jid) )
 				{
 					const userQuery =  jidNormalizedUser(participant?.jid || jid)
 
 					if(!isLidUser(userQuery))
 						{
 
-						const verify = lidCache.get(userQuery);
+                        const verify = await caches.lidCache.get(userQuery);					
 						if(verify){ 
 							lids = verify
 						}
@@ -424,13 +425,13 @@ const lidCache = new NodeCache({
 						if (results?.list) {
 							const maybeLid = results.list[0]?.lid;
 								if (typeof maybeLid === 'string') {
-								lidCache.set(userQuery,maybeLid)
+								caches.lidCache.set(userQuery,maybeLid)
 								lids = maybeLid;								
 								}					
 						   }
 						}
 					}
-			}	
+			}
 		const { user, server } = jidDecode(jid)!
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
