@@ -21,6 +21,7 @@ export type WAMessageKey = proto.IMessageKey & {
 	participant_lid?: string
 	participant_pn?: string
 	isViewOnce?: boolean
+	peer_recipient_lid?: string
 	/// deixar da mesma maneira que vem no node.
 }
 export type WATextMessage = proto.Message.IExtendedTextMessage

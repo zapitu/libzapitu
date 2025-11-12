@@ -9,7 +9,6 @@ import {
 	ChatMutation,
 	LTHashState,
 	MessageUpsertType,
-	PresenceData,
 	SocketConfig,
 	WABusinessHoursConfig,
 	WABusinessProfile,
@@ -684,40 +683,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				: undefined
 		})
 
-	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
-		let presence: PresenceData | undefined
-		const jid = attrs.from
-		const participant = attrs.participant || attrs.from
 
-		if (shouldIgnoreJid(jid) && jid !== '@s.whatsapp.net') {
-			return
-		}
-
-		if (tag === 'presence') {
-			presence = {
-				lastKnownPresence: attrs.type === 'unavailable' ? 'unavailable' : 'available',
-				lastSeen: attrs.last && attrs.last !== 'deny' ? +attrs.last : undefined
-			}
-		} else if (Array.isArray(content)) {
-			const [firstChild] = content
-			let type = firstChild.tag as WAPresence
-			if (type === 'paused') {
-				type = 'available'
-			}
-
-			if (firstChild.attrs?.media === 'audio') {
-				type = 'recording'
-			}
-
-			presence = { lastKnownPresence: type }
-		} else {
-			logger.error({ tag, attrs, content }, 'recv invalid presence node')
-		}
-
-		if (presence) {
-			ev.emit('presence.update', { id: jid, presences: { [participant]: presence } })
-		}
-	}
 
 	const appPatch = async (patchCreate: WAPatchCreate) => {
 		const name = patchCreate.type
@@ -1028,8 +994,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
-	ws.on('CB:presence', handlePresenceUpdate)
-	ws.on('CB:chatstate', handlePresenceUpdate)
 
 	ws.on('CB:ib,,dirty', async (node: BinaryNode) => {
 		const { attrs } = getBinaryNodeChild(node, 'dirty')!
