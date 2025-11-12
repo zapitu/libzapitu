@@ -13,7 +13,9 @@ import {
 	WAMessageKey,
 	WAMessageStatus,
 	WAMessageStubType,
-	WAPatchName
+	WAPatchName,
+	WAPresence,
+	PresenceData
 } from '../Types'
 import {
 	aesDecryptCTR,
@@ -1260,6 +1262,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 		}
 	}
+		const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
+			let presence: PresenceData | undefined
+			const jid = attrs.from
+			const participant = attrs.participant || attrs.from
+	
+			if (shouldIgnoreJid(jid)) {
+				return
+			}
+	
+			if (tag === 'presence') {
+				presence = {
+					lastKnownPresence: attrs.type === 'unavailable' ? 'unavailable' : 'available',
+					lastSeen: attrs.last && attrs.last !== 'deny' ? +attrs.last : undefined
+				}
+			} else if (Array.isArray(content)) {
+				const [firstChild] = content
+				let type = firstChild.tag as WAPresence
+				if (type === 'paused') {
+					type = 'available'
+				}
+	
+				if (firstChild.attrs?.media === 'audio') {
+					type = 'recording'
+				}
+	
+				presence = { lastKnownPresence: type }
+			} else {
+				logger.error({ tag, attrs, content }, 'recv invalid presence node')
+			}
+	
+			if (presence) {
+				ev.emit('presence.update', { id: jid, presences: { [participant]: presence } })
+			}
+		}
 
 	// recv a message
 	ws.on('CB:message', (node: BinaryNode) => {
@@ -1280,6 +1316,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
 		handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'))
 	})
+	ws.on('CB:presence', handlePresenceUpdate)
+	ws.on('CB:chatstate', handlePresenceUpdate)
 
 	ev.on('call', ([call]) => {
 		// missed call + group call notification message generation
