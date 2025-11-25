@@ -30,7 +30,8 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds,
 	convertlidDevice,
-	getContentType
+	getContentType,
+	encodeNewsletterMessage
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import {
@@ -437,6 +438,7 @@ const lidCache = new NodeCache({
 		const isGroup = server === 'g.us'
 		const isStatus = jid === statusJid
 		const isLid = server === 'lid'				
+		const isNewsletter = server === 'newsletter'
 
 		let shouldIncludeDeviceIdentity = false		
 
@@ -471,6 +473,29 @@ const lidCache = new NodeCache({
 			const mediaType = getMediaType(message)
 			if (mediaType) {
 				extraAttrs['mediatype'] = mediaType
+			}
+
+			if (isNewsletter) {
+				const patched = patchMessageBeforeSending ? await patchMessageBeforeSending(message, []) : message
+				const bytes = encodeNewsletterMessage(patched as proto.IMessage)
+				binaryNodeContent.push({
+					tag: 'plaintext',
+					attrs: {},
+					content: bytes
+				})
+				const stanza: BinaryNode = {
+					tag: 'message',
+					attrs: {
+						to: jid,
+						id: msgId,
+						type: getMessageType(message),
+						...(additionalAttributes || {})
+					},
+					content: binaryNodeContent
+				}
+				logger.debug({ msgId }, `sending newsletter message to ${jid}`)
+				await sendNode(stanza)
+				return
 			}
 
 			if (normalizeMessageContent(message)?.pinInChatMessage) {
