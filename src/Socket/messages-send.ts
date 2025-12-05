@@ -50,7 +50,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
-import { makeGroupsSocket } from './groups'
+import { makeNewsletterSocket } from './newsletter'
 import caches from '../Utils/cache-utils';
 
 export const makeMessagesSocket = (config: SocketConfig) => {
@@ -62,7 +62,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		patchMessageBeforeSending,
 		cachedGroupMetadata
 	} = config
-	const sock = makeGroupsSocket(config)
+	const sock = makeNewsletterSocket(config)
 	const {
 		ev,
 		authState,
