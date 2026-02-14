@@ -52837,6 +52837,9 @@ export namespace proto {
 
         /** WebMessageInfo botTargetId */
         botTargetId?: (string|null);
+
+         /** view once message */
+        viewOnce?: (boolean|null);
     }
 
     /** Represents a WebMessageInfo. */

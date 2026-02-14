@@ -767,6 +767,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const checkisValid = getBinaryNodeChild(node, 'unavailable')
+		if(checkisValid && checkisValid.attrs.type==='view_once'){
+			logger.debug({ key: node.attrs.key }, 'ignored msmsg viewOnce message');
+			const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '');
+			fullMessage.viewOnce = true;
+			await upsertMessage(fullMessage, 'append');
+			await sendMessageAck(node)
+			return
+
+		}
+
 		const encNode = getBinaryNodeChild(node, 'enc')
 
 		// TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
