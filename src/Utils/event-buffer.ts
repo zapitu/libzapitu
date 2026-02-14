@@ -140,8 +140,9 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
 			if (buffersInProgress && BUFFERABLE_EVENT_SET.has(event)) {
-				append(data, historyCache, event as BufferableEvent, evData, logger)
-				return true
+				//append(data, historyCache, event as BufferableEvent, evData, logger)
+				//return true
+				/// Vazamento de memória detectado aqui, desabilitado momentaneamente para testes.
 			}
 
 			return ev.emit('event', { [event]: evData })

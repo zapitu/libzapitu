@@ -652,7 +652,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			participant: attrs.participant
 		}
 
-		if (shouldIgnoreJid(remoteJid) && remoteJid !== '@s.whatsapp.net') {
+		if (remoteJid && shouldIgnoreJid(remoteJid) && remoteJid !== '@s.whatsapp.net') {
 			logger.debug({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
@@ -767,6 +767,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const checkisValid = getBinaryNodeChild(node, 'unavailable')
+		if(checkisValid && checkisValid.attrs.type==='view_once'){
+			logger.debug({ key: node.attrs.key }, 'ignored msmsg viewOnce message');
+			const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '');
+			fullMessage.viewOnce = true;
+			await upsertMessage(fullMessage, 'append');
+			await sendMessageAck(node)
+			return
+
+		}
+
 		const encNode = getBinaryNodeChild(node, 'enc')
 
 		// TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
@@ -813,6 +824,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			node.attrs.sender_pn
 		) {
 			ev.emit('chats.phoneNumberShare', { lid: node.attrs.from, jid: node.attrs.sender_pn })
+		}
+		if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+			if (
+				msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT ||
+				msg.messageStubParameters?.[0] === NO_MESSAGE_FOUND_ERROR_TEXT
+			) {
+				return sendMessageAck(node)
+			}
 		}
 
 		try {
@@ -876,6 +895,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 			])
 		} catch (error) {
+			sendMessageAck(node)
 			logger.error({ error, node }, 'error in handling message')
 		}
 	}
@@ -1088,7 +1108,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				isProcessing = false
 			}
 
-			promise().catch(error => onUnexpectedError(error, 'processing offline nodes'))
+			promise().catch(error => {
+				onUnexpectedError(error, 'processing offline nodes')
+				sendMessageAck(node)
+			})
 		}
 
 		return { enqueue }
