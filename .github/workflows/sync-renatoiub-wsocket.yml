@@ -36,5 +36,51 @@ jobs:
         run: |
           set +e  # Prevent shell from stopping on error
           git checkout rf
-          git merge --ff-only rf-fullhistory || git merge rf-fullhistory -m "Merged upstream changes" || git merge --abort
-          git push origin rf
+
+          # Try fast-forward first, then a normal merge
+          git merge --ff-only rf-fullhistory
+          MERGE_EXIT=$?
+          if [ $MERGE_EXIT -ne 0 ]; then
+            git merge rf-fullhistory -m "Merged upstream changes"
+            MERGE_EXIT=$?
+          fi
+
+          # If merge succeeded, push and finish
+          if [ $MERGE_EXIT -eq 0 ]; then
+            git push origin rf
+            exit 0
+          fi
+
+          # Merge failed: detect conflicted files
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          echo "Conflicted files: $CONFLICTS"
+
+          # If yarn.lock is conflicted: keep the current branch's lockfile to finish merge,
+          # then regenerate it and commit the regenerated lockfile separately.
+          if echo "$CONFLICTS" | grep -q "^yarn.lock$"; then
+            echo "Keeping current branch's yarn.lock to finish merge; will regenerate after."
+            git checkout --ours -- yarn.lock || git checkout --ours yarn.lock || true
+            git add yarn.lock
+            git commit -m "Resolve merge conflict: keep existing yarn.lock" || true
+
+            # Continue merge if needed
+            git merge --continue >/dev/null 2>&1 || true
+
+            # Recreate lockfile after merge completes
+            if ! command -v yarn >/dev/null 2>&1; then
+              corepack enable || true
+            fi
+            yarn install --network-concurrency 1 || yarn install
+
+            # Commit regenerated lockfile
+            git add yarn.lock
+            git commit -m "Regenerate yarn.lock after merge" || true
+
+            git push origin rf
+            exit 0
+          fi
+
+          # Unknown conflicts: abort and fail the job so human can inspect
+          git merge --abort || true
+          echo "Merge failed with conflicts: $CONFLICTS"
+          exit 1
