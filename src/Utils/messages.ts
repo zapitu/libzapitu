@@ -536,6 +536,21 @@ export const generateWAMessageContent = async (
 		m = await prepareWAMessageMedia(message, options)
 	}
 
+	// Process list/sections - must be after other processing
+	if ('sections' in message && !!(message as any).sections) {
+		const msgAny = message as any
+		const listMessage: proto.Message.IListMessage = {
+			sections: msgAny.sections,
+			buttonText: msgAny.buttonText,
+			title: msgAny.title,
+			footerText: msgAny.footer,
+			description: msgAny.text,
+			listType: msgAny.listType || proto.Message.ListMessage.ListType.SINGLE_SELECT
+		}
+
+		m = { listMessage }
+	}
+
 	if ('viewOnce' in message && !!message.viewOnce) {
 		m = { viewOnceMessage: { message: m } }
 	}
