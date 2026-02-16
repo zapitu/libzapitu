@@ -460,6 +460,129 @@ const lidCache = new NodeCache({
 		   
 		const extraAttrs = {}
 
+		const normalizedContent = normalizeMessageContent(message)
+		
+		const getButtonType = (msg: typeof normalizedContent) => {
+			if (msg?.listMessage) {
+				return 'list'
+			} else if (msg?.buttonsMessage) {
+				return 'buttons'
+			} else if (msg?.interactiveMessage?.nativeFlowMessage) {
+				return 'native_flow'
+			}
+			return undefined
+		}
+
+		const getButtonArgs = (msg: typeof normalizedContent): BinaryNode => {
+			const nativeFlow = msg?.interactiveMessage?.nativeFlowMessage
+			const firstButtonName = nativeFlow?.buttons?.[0]?.name
+			const nativeFlowSpecials = [
+				'mpm', 'cta_catalog', 'send_location',
+				'call_permission_request', 'wa_payment_transaction_details',
+				'automated_greeting_message_view_catalog'
+			]
+
+			if (nativeFlow && (firstButtonName === 'review_and_pay' || firstButtonName === 'payment_info')) {
+				return {
+					tag: 'biz',
+					attrs: {
+						native_flow_name: firstButtonName === 'review_and_pay' ? 'order_details' : firstButtonName
+					}
+				}
+			} else if (nativeFlow && nativeFlowSpecials.includes(firstButtonName!)) {
+				return {
+					tag: 'biz',
+					attrs: {
+						actual_actors: '2',
+						host_storage: '2',
+						privacy_mode_ts: unixTimestampSeconds().toString()
+					},
+					content: [{
+						tag: 'interactive',
+						attrs: {
+							type: 'native_flow',
+							v: '1'
+						},
+						content: [{
+							tag: 'native_flow',
+							attrs: {
+								v: '2',
+								name: firstButtonName!
+							}
+						}]
+					},
+					{
+						tag: 'quality_control',
+						attrs: {
+							source_type: 'third_party'
+						}
+					}]
+				}
+			} else if (nativeFlow || msg?.buttonsMessage) {
+				return {
+					tag: 'biz',
+					attrs: {
+						actual_actors: '2',
+						host_storage: '2',
+						privacy_mode_ts: unixTimestampSeconds().toString()
+					},
+					content: [{
+						tag: 'interactive',
+						attrs: {
+							type: 'native_flow',
+							v: '1'
+						},
+						content: [{
+							tag: 'native_flow',
+							attrs: {
+								v: '9',
+								name: 'mixed'
+							}
+						}]
+					},
+					{
+						tag: 'quality_control',
+						attrs: {
+							source_type: 'third_party'
+						}
+					}]
+				}
+			} else if (msg?.listMessage) {
+				return {
+					tag: 'biz',
+					attrs: {
+						actual_actors: '2',
+						host_storage: '2',
+						privacy_mode_ts: unixTimestampSeconds().toString()
+					},
+					content: [{
+						tag: 'list',
+						attrs: {
+							v: '2',
+							type: 'product_list'
+						}
+					},
+					{
+						tag: 'quality_control',
+						attrs: {
+							source_type: 'third_party'
+						}
+					}]
+				}
+			} else {
+				return {
+					tag: 'biz',
+					attrs: {
+						actual_actors: '2',
+						host_storage: '2',
+						privacy_mode_ts: unixTimestampSeconds().toString()
+					}
+				}
+			}
+		}
+
+		const buttonType = getButtonType(normalizedContent)
+
 		if (participant) {
 	
 			if (!isGroup && !isStatus) {
@@ -713,41 +836,12 @@ const lidCache = new NodeCache({
 			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
-			const content = normalizeMessageContent(message)!
-				const contentType = getContentType(content)!
 
-				if((isJidGroup(jid) || isJidUser(jid))  || isLidUser(jid) && (
-					contentType === 'interactiveMessage' ||
-					contentType === 'buttonsMessage' ||
-					contentType === 'listMessage'
-				)) {
-					const bizNode: BinaryNode = { tag: 'biz', attrs: {} }
-
-					if((message?.viewOnceMessage?.message?.interactiveMessage || message?.viewOnceMessageV2?.message?.interactiveMessage || message?.viewOnceMessageV2Extension?.message?.interactiveMessage || message?.interactiveMessage) || (message?.viewOnceMessage?.message?.buttonsMessage || message?.viewOnceMessageV2?.message?.buttonsMessage || message?.viewOnceMessageV2Extension?.message?.buttonsMessage || message?.buttonsMessage)) {
-						bizNode.content = [{
-							tag: 'interactive',
-							attrs: {
-								type: 'native_flow',
-								v: '1'
-							},
-							content: [{
-								tag: 'native_flow',
-								attrs: { v: '9', name: 'mixed' }
-							}]
-						}]
-					} else if(message?.listMessage) {
-						// list message only support in private chat
-						bizNode.content = [{
-							tag: 'list',
-							attrs: {
-								type: 'product_list',
-								v: '2'
-							}
-						}]
-					}
-
-					(stanza.content as BinaryNode[]).push(bizNode)
-				}
+			// Add button node if needed (using pre-calculated buttonType from before transaction)
+			if (!isNewsletter && buttonType) {
+				const buttonsNode = getButtonArgs(normalizedContent)
+				;(stanza.content as BinaryNode[]).push(buttonsNode)
+			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
