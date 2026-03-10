@@ -36,6 +36,16 @@ export const NACK_REASONS = {
 	UnsupportedLIDGroup: 551,
 	DBOperationFailed: 552
 }
+export const SERVER_ERROR_CODES = {
+	/** Group addressing mode is stale — re-query group metadata */
+	StaleGroupAddressingMode: '421',
+	/** 1:1 message missing privacy token (tctoken) */
+	MissingTcToken: '463',
+	/** New chat messages rate limited */
+	NewChatMessagesCapped: '475',
+	/** Stanza validation failure (SMAX_INVALID) — likely stale device session */
+	SmaxInvalid: '479'
+} as const
 
 type MessageType =
 	| 'chat'
