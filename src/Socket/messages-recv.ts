@@ -39,7 +39,8 @@ import {
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	unixTimestampSeconds,
 	xmppPreKey,
-	xmppSignedPreKey
+	xmppSignedPreKey,
+	SERVER_ERROR_CODES
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import {
@@ -397,6 +398,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		switch (nodeType) {
 			case 'privacy_token':
+				await handlePrivacyTokenNotification(node)
 				const tokenList = getBinaryNodeChildren(child, 'token')
 				for (const { attrs, content } of tokenList) {
 					const jid = attrs.jid
@@ -1016,6 +1018,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await sendMessageAck(node)
 	}
 
+	/** tracks message IDs that have already been retried for error 463 — prevents retry loops */
+	const tcTokenRetriedMsgIds = new Set<string>()
+
+	/** tracks JIDs for which we have stored tctokens — used for periodic pruning */
+	const tcTokenKnownJids = new Set<string>()
+
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
 
@@ -1035,8 +1043,49 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// error in acknowledgement,
 		// device could not display the message
-		if (attrs.error) {
-			logger.warn({ attrs }, 'received error in ack')
+				if (attrs.error) {
+			if (attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
+				// Single retry: the original getPrivacyTokens IQ triggered token issuance.
+				// After a brief delay the server should have pushed a privacy_token
+				// notification, making the re-send succeed.
+				const msgId = attrs.id
+				const jid = jidNormalizedUser(attrs.from)
+				if (msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
+					// Each entry auto-expires via setTimeout(60s), so the set
+					// is naturally bounded under normal conditions.
+					tcTokenRetriedMsgIds.add(msgId)
+					setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
+					let msg: proto.IMessage | undefined
+					
+						msg = await getMessage(key)
+					
+					if (msg) {
+						try {
+							await delay(1500)
+							await relayMessage(jid, msg, {
+								messageId: msgId,
+								useUserDevicesCache: true
+							})
+							logger.info({ msgId, from: jid }, 'error 463 retry succeeded')
+							return
+						} catch (retryErr: any) {
+							logger.warn({ msgId, err: retryErr?.message }, 'error 463 retry failed')
+						}
+					} else {
+						logger.warn({ msgId, from: jid }, 'error 463: no message found for retry')
+					}
+				} else if (msgId && tcTokenRetriedMsgIds.has(msgId)) {
+					logger.warn({ msgId, from: jid }, 'error 463: already retried, giving up')
+				}
+			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
+				logger.warn(
+					{ msgId: attrs.id, from: attrs.from },
+					'smax-invalid (479): stanza rejected by server — likely stale device session or malformed addressing'
+				)
+			} else {
+				logger.warn({ attrs }, 'received error in ack')
+			}
+
 			ev.emit('messages.update', [
 				{
 					key,
@@ -1285,6 +1334,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 		}
 	}
+
+		const handlePrivacyTokenNotification = async (node: BinaryNode) => {
+		const tokensNode = getBinaryNodeChild(node, 'tokens')
+		const from = jidNormalizedUser(node.attrs.from)
+		const issueTimestamp = unixTimestampSeconds()
+
+		if (!tokensNode) return
+
+		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
+
+		for (const tokenNode of tokenNodes) {
+			const { attrs, content } = tokenNode
+			const type = attrs.type
+			const timestamp = attrs.t
+
+			if (type === 'trusted_contact' && content instanceof Buffer) {
+				logger.debug(
+					{
+						from,
+						timestamp,
+						tcToken: content
+					},
+					'received trusted contact token'
+				)
+
+				await authState.keys.set({
+					'contacts-tc-token': { [from]: { token: content, timestamp, senderTimestamp: issueTimestamp } }
+				})
+			}
+		}
+	}
+
 		const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
 			let presence: PresenceData | undefined
 			const jid = attrs.from

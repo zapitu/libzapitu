@@ -34,6 +34,7 @@ import {
 	encodeNewsletterMessage
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
+import { isTcTokenExpired, shouldSendNewTcToken, storeTcTokensFromIqResult } from '../Utils/tc-token-utils' //by  Whiskey Sockets and modifications by Renato F
 import {
 	areJidsSameUser,
 	BinaryNode,
@@ -833,6 +834,31 @@ const lidCache = new NodeCache({
 				logger.debug({ jid }, 'adding device identity')
 			}
 
+			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+			const is1on1Send = !isGroup && !isretry && !isStatus && !isNewsletter && !isPeerMessage
+			const tcTokenJid = lids || destinationJid
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('contacts-tc-token', [tcTokenJid]) : {}
+			const existingTokenEntry = contactTcTokenData[tcTokenJid]
+			let tcTokenBuffer: Buffer | undefined = existingTokenEntry?.token
+
+			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
+				logger.debug({ jid: destinationJid, timestamp: existingTokenEntry?.timestamp }, 'tctoken expired, clearing')
+				tcTokenBuffer = undefined
+
+				try {
+					await authState.keys.set({ 'contacts-tc-token': { [tcTokenJid]: null } })
+				} catch {}
+			}
+
+			if (tcTokenBuffer?.length) {
+				;(stanza.content as BinaryNode[]).push({
+					tag: 'tctoken',
+					attrs: {},
+					content: tcTokenBuffer
+				})
+			}
+
+
 			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
@@ -846,6 +872,37 @@ const lidCache = new NodeCache({
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
+			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+				const issueTimestamp = unixTimestampSeconds()
+				await getPrivacyTokens([lids || destinationJid], issueTimestamp)
+					.then(async result => {
+						// Store any tokens the server returned in the IQ response.
+						// Note: onNewJidStored not passed — the pruning index lives in messages-recv
+						// (higher layer). This is benign: fire-and-forget only runs for contacts
+						// we're actively messaging, so their JIDs will be tracked via the receive path.
+						await storeTcTokensFromIqResult({
+							result,
+							fallbackJid: tcTokenJid,
+							keys: authState.keys
+						})
+
+						// Persist senderTimestamp to prevent redundant issuances.
+						// WA Web stores tcTokenSenderTimestamp in the chat table unconditionally.
+						const currentData = await authState.keys.get('contacts-tc-token', [tcTokenJid])
+						const currentEntry = currentData[tcTokenJid]
+						await authState.keys.set({
+							'contacts-tc-token': {
+								[tcTokenJid]: {
+									...currentEntry,
+									senderTimestamp: issueTimestamp
+								}
+							}
+						})
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken issuance failed')
+					})
+			}
 		})
 
 		return msgId
@@ -923,8 +980,8 @@ const lidCache = new NodeCache({
 		}
 	}
 
-	const getPrivacyTokens = async (jids: string[]) => {
-		const t = unixTimestampSeconds().toString()
+	const getPrivacyTokens = async (jids: string[], timestamp?: number) => {
+		const t = (timestamp ?? unixTimestampSeconds()).toString()
 		const result = await query({
 			tag: 'iq',
 			attrs: {
