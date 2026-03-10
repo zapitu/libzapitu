@@ -34,6 +34,7 @@ import {
 	encodeNewsletterMessage
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
+import { isTcTokenExpired, shouldSendNewTcToken, storeTcTokensFromIqResult } from '../Utils/tc-token-utils' //by  Whiskey Sockets and modifications by Renato F
 import {
 	areJidsSameUser,
 	BinaryNode,
@@ -832,6 +833,31 @@ const lidCache = new NodeCache({
 
 				logger.debug({ jid }, 'adding device identity')
 			}
+
+			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+			const is1on1Send = !isGroup && !isretry && !isStatus && !isNewsletter && !isPeerMessage
+			const tcTokenJid = lids || destinationJid
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('contacts-tc-token', [tcTokenJid]) : {}
+			const existingTokenEntry = contactTcTokenData[tcTokenJid]
+			let tcTokenBuffer: Buffer | undefined = existingTokenEntry?.token
+
+			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
+				logger.debug({ jid: destinationJid, timestamp: existingTokenEntry?.timestamp }, 'tctoken expired, clearing')
+				tcTokenBuffer = undefined
+
+				try {
+					await authState.keys.set({ 'contacts-tc-token': { [tcTokenJid]: null } })
+				} catch {}
+			}
+
+			if (tcTokenBuffer?.length) {
+				;(stanza.content as BinaryNode[]).push({
+					tag: 'tctoken',
+					attrs: {},
+					content: tcTokenBuffer
+				})
+			}
+
 
 			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
