@@ -872,6 +872,37 @@ const lidCache = new NodeCache({
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
+			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+				const issueTimestamp = unixTimestampSeconds()
+				await getPrivacyTokens([lids || destinationJid], issueTimestamp)
+					.then(async result => {
+						// Store any tokens the server returned in the IQ response.
+						// Note: onNewJidStored not passed — the pruning index lives in messages-recv
+						// (higher layer). This is benign: fire-and-forget only runs for contacts
+						// we're actively messaging, so their JIDs will be tracked via the receive path.
+						await storeTcTokensFromIqResult({
+							result,
+							fallbackJid: tcTokenJid,
+							keys: authState.keys
+						})
+
+						// Persist senderTimestamp to prevent redundant issuances.
+						// WA Web stores tcTokenSenderTimestamp in the chat table unconditionally.
+						const currentData = await authState.keys.get('contacts-tc-token', [tcTokenJid])
+						const currentEntry = currentData[tcTokenJid]
+						await authState.keys.set({
+							'contacts-tc-token': {
+								[tcTokenJid]: {
+									...currentEntry,
+									senderTimestamp: issueTimestamp
+								}
+							}
+						})
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken issuance failed')
+					})
+			}
 		})
 
 		return msgId
@@ -949,8 +980,8 @@ const lidCache = new NodeCache({
 		}
 	}
 
-	const getPrivacyTokens = async (jids: string[]) => {
-		const t = unixTimestampSeconds().toString()
+	const getPrivacyTokens = async (jids: string[], timestamp?: number) => {
+		const t = (timestamp ?? unixTimestampSeconds()).toString()
 		const result = await query({
 			tag: 'iq',
 			attrs: {
