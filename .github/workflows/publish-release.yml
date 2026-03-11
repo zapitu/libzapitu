@@ -49,7 +49,29 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Validate tag and publishability
+        id: publish_guard
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG) does not match package.json version ($PKG_VERSION)."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if npm view libzapitu-rf@"$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "Version $PKG_VERSION of libzapitu-rf is already published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
       - name: Publish in NPM (as `libzapitu-rf` and aliases)
+        if: steps.publish_guard.outputs.publish == 'true'
         run: |
           npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
           npx json -I -f package.json -e "this.name='libzapitu'"
@@ -59,6 +81,7 @@ jobs:
           npx json -I -f package.json -e "this.name='zapitu-rf'"
 
       - name: Generate Changelog
+        if: steps.publish_guard.outputs.publish == 'true'
         id: generate_changelog
         run: |
           changelog=$(npm run changelog:last --silent)
@@ -67,12 +90,15 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Make Package
+        if: steps.publish_guard.outputs.publish == 'true'
         run: npm pack
 
       - name: Rename Pack
+        if: steps.publish_guard.outputs.publish == 'true'
         run: mv *.tgz libzapitu-rf.tgz
 
       - name: Create Release
+        if: steps.publish_guard.outputs.publish == 'true'
         uses: meeDamian/github-release@2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
