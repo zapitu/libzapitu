@@ -24,8 +24,17 @@ jobs:
 
       - name: Install packages
         run: |
-          yarn
-          yarn --pure-lockfile --cwd proto-extract
+          if [ -f yarn.lock ]; then
+            yarn install --frozen-lockfile
+          else
+            yarn install --no-lockfile
+          fi
+
+          if [ -f proto-extract/yarn.lock ]; then
+            yarn install --frozen-lockfile --cwd proto-extract
+          else
+            yarn install --no-lockfile --cwd proto-extract
+          fi
 
       - name: Update WAProto.proto
         id: wa_proto_info

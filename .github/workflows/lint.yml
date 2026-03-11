@@ -16,7 +16,12 @@ jobs:
         node-version: 20.x
 
     - name: Install packages
-      run: yarn
+      run: |
+        if [ -f yarn.lock ]; then
+          yarn install --frozen-lockfile
+        else
+          yarn install --no-lockfile
+        fi
     
     - name: Check linting
       run: yarn lint
