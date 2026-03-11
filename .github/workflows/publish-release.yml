@@ -57,15 +57,15 @@ jobs:
           PKG_VERSION=$(node -p "require('./package.json').version")
 
           if [ "$TAG" != "$PKG_VERSION" ]; then
-            echo "Tag version ($TAG) does not match package.json version ($PKG_VERSION)."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Tag version ($TAG) does not match package.json version ($PKG_VERSION)."
+            echo "Fix by bumping package.json to $TAG or tagging the commit that already has version $TAG."
+            exit 1
           fi
 
           if npm view libzapitu-rf@"$PKG_VERSION" version >/dev/null 2>&1; then
-            echo "Version $PKG_VERSION of libzapitu-rf is already published."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Version $PKG_VERSION of libzapitu-rf is already published on npm."
+            echo "Use a new version and push a new tag."
+            exit 1
           fi
 
           echo "publish=true" >> "$GITHUB_OUTPUT"

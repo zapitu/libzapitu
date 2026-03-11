@@ -14,11 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
       packages: write
       pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Setup GIT
         run: |
@@ -51,4 +54,53 @@ jobs:
           fi
 
       - name: Release
-        run: npx release-it --increment ${{ github.event.inputs.increment }}
+        run: npx release-it --ci --increment ${{ github.event.inputs.increment }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read released version
+        id: released_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Publish in NPM (as `libzapitu-rf` and aliases)
+        run: |
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
+          npx json -I -f package.json -e "this.name='libzapitu'"
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
+          npx json -I -f package.json -e "this.name='zapitu'"
+          npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
+          npx json -I -f package.json -e "this.name='zapitu-rf'"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate Changelog
+        id: generate_changelog
+        run: |
+          changelog=$(npm run changelog:last --silent)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "${changelog}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Make Package
+        run: npm pack
+
+      - name: Rename Pack
+        run: mv *.tgz libzapitu-rf.tgz
+
+      - name: Create Release
+        uses: meeDamian/github-release@2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.released_version.outputs.tag }}
+          commitish: ${{ github.sha }}
+          name: ${{ steps.released_version.outputs.tag }}
+          body: ${{ steps.generate_changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
+          files: >
+            libzapitu-rf.tgz
+          gzip: folders
+          allow_override: true
