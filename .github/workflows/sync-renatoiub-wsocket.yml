@@ -47,6 +47,13 @@ jobs:
 
           # If merge succeeded, push and finish
           if [ $MERGE_EXIT -eq 0 ]; then
+            # Keep yarn.lock ignored on rf even if upstream changed/reintroduced it
+            if git ls-files --error-unmatch yarn.lock >/dev/null 2>&1 || [ -f yarn.lock ]; then
+              git rm --cached -f yarn.lock >/dev/null 2>&1 || true
+              rm -f yarn.lock
+              git add -A
+              git commit -m "chore: keep yarn.lock ignored" || true
+            fi
             git push origin rf
             exit 0
           fi
@@ -55,26 +62,21 @@ jobs:
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
           echo "Conflicted files: $CONFLICTS"
 
-          # If yarn.lock is conflicted: keep the current branch's lockfile to finish merge,
-          # then regenerate it and commit the regenerated lockfile separately.
+          # If yarn.lock is conflicted, drop it from the merge on rf (it is intentionally ignored).
           if echo "$CONFLICTS" | grep -q "^yarn.lock$"; then
-            echo "Keeping current branch's yarn.lock to finish merge; will regenerate after."
-            git checkout --ours -- yarn.lock || git checkout --ours yarn.lock || true
-            git add yarn.lock
-            git commit -m "Resolve merge conflict: keep existing yarn.lock" || true
+            echo "Dropping yarn.lock from merge because it is ignored on rf."
+            git rm -f -- yarn.lock >/dev/null 2>&1 || rm -f yarn.lock
+            git add -A
+            git commit -m "Resolve merge conflict: ignore yarn.lock" || true
 
             # Continue merge if needed
             git merge --continue >/dev/null 2>&1 || true
 
-            # Recreate lockfile after merge completes
-            if ! command -v yarn >/dev/null 2>&1; then
-              corepack enable || true
-            fi
-            yarn install --network-concurrency 1 || yarn install
-
-            # Commit regenerated lockfile
-            git add yarn.lock
-            git commit -m "Regenerate yarn.lock after merge" || true
+            # Ensure yarn.lock remains removed/ignored after merge
+            git rm --cached -f yarn.lock >/dev/null 2>&1 || true
+            rm -f yarn.lock
+            git add -A
+            git commit -m "chore: keep yarn.lock ignored" || true
 
             git push origin rf
             exit 0

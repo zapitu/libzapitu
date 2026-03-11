@@ -10,6 +10,7 @@ browser-messages.json
 browser-token.json
 decoded-ws.json
 package-lock.json
+yarn.lock
 docs
 lib
 messages*.json
