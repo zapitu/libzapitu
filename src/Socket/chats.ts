@@ -5,6 +5,7 @@ import { DEFAULT_CACHE_TTLS, PROCESSABLE_HISTORY_TYPES } from '../Defaults'
 import {
 	ALL_WA_PATCH_NAMES,
 	BotListInfo,
+	CacheStore,
 	ChatModification,
 	ChatMutation,
 	LTHashState,
@@ -70,9 +71,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	/** this mutex ensures that the notifications (receipts, messages etc.) are processed in order */
 	const processingMutex = makeMutex()
 
-	const placeholderResendCache =
+	const placeholderResendCache: CacheStore =
 		config.placeholderResendCache ||
-		new NodeCache({
+		new NodeCache<any>({
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
 			useClones: false
 		})

@@ -5,6 +5,7 @@ import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import ListType = proto.Message.ListMessage.ListType
 import {
 	AnyMessageContent,
+	CacheStore,
 	MediaConnInfo,
 	MessageReceiptType,
 	MessageRelayOptions,
@@ -82,14 +83,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral
 	} = sock
 
-	const userDevicesCache =
+	const userDevicesCache: CacheStore =
 		config.userDevicesCache ||
-		new NodeCache({
+		new NodeCache<any>({
 			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES,
 			useClones: false
 		})
 
-	const lidCache = new NodeCache({
+	const lidCache = new NodeCache<string>({
 		stdTTL: 3600, // 1 hour
 		useClones: false
 	})

@@ -8,6 +8,7 @@ import {
 	MessageReceiptType,
 	MessageRelayOptions,
 	MessageUserReceipt,
+	CacheStore,
 	PresenceData,
 	SocketConfig,
 	WACallEvent,
@@ -89,22 +90,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
 
-	const msgRetryCache =
+	const msgRetryCache: CacheStore =
 		config.msgRetryCounterCache ||
-		new NodeCache({
+		new NodeCache<any>({
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
 			useClones: false
 		})
-	const callOfferCache =
+	const callOfferCache: CacheStore =
 		config.callOfferCache ||
-		new NodeCache({
+		new NodeCache<any>({
 			stdTTL: DEFAULT_CACHE_TTLS.CALL_OFFER, // 5 mins
 			useClones: false
 		})
 
-	const placeholderResendCache =
+	const placeholderResendCache: CacheStore =
 		config.placeholderResendCache ||
-		new NodeCache({
+		new NodeCache<any>({
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
 			useClones: false
 		})

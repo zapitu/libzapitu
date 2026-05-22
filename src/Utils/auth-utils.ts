@@ -43,8 +43,8 @@ export function makeCacheableSignalKeyStore(
 			const idsToFetch: string[] = []
 			for (const id of ids) {
 				const item = cache.get<SignalDataTypeMap[typeof type]>(getUniqueId(type, id))
-				if (typeof item !== 'undefined') {
-					data[id] = item
+				if (typeof item !== 'undefined' && item !== null) {
+					data[id] = item as SignalDataTypeMap[typeof type]
 				} else {
 					idsToFetch.push(id)
 				}
