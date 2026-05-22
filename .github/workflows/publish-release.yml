@@ -1,4 +1,5 @@
 name: Publish Release
+name: Publish Release
 
 on:
   push:
@@ -8,8 +9,65 @@ on:
 permissions: write-all
 
 jobs:
-  publish-release:
+  github-release:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Fetching tags
+        run: git fetch --tags -f || true
+
+      - name: Setup Node
+        uses: actions/setup-node@v3.6.0
+        with:
+          node-version: 20.x
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v3
+        id: yarn-cache
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/package.json', '**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install Dependencies
+        run: |
+          if [ -f yarn.lock ]; then
+            yarn install --frozen-lockfile
+          else
+            yarn install --no-lockfile
+          fi
+
+      - name: Generate Changelog
+        id: generate_changelog
+        run: |
+          changelog=$(npm run changelog:last --silent)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "${changelog}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: meeDamian/github-release@2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref }}
+          commitish: ${{ github.sha }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.generate_changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          allow_override: true
+
+  npm-publish:
+    runs-on: ubuntu-latest
+    needs: github-release
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -32,7 +90,7 @@ jobs:
         run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
 
       - uses: actions/cache@v3
-        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
           key: ${{ runner.os }}-yarn-${{ hashFiles('**/package.json', '**/yarn.lock') }}
@@ -80,15 +138,6 @@ jobs:
           npm publish --access public --//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
           npx json -I -f package.json -e "this.name='zapitu-rf'"
 
-      - name: Generate Changelog
-        if: steps.publish_guard.outputs.publish == 'true'
-        id: generate_changelog
-        run: |
-          changelog=$(npm run changelog:last --silent)
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "${changelog}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Make Package
         if: steps.publish_guard.outputs.publish == 'true'
         run: npm pack
@@ -97,17 +146,12 @@ jobs:
         if: steps.publish_guard.outputs.publish == 'true'
         run: mv *.tgz libzapitu-rf.tgz
 
-      - name: Create Release
+      - name: Upload package to GitHub Release
         if: steps.publish_guard.outputs.publish == 'true'
         uses: meeDamian/github-release@2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref }}
-          commitish: ${{ github.sha }}
-          name: ${{ github.ref_name }}
-          body: ${{ steps.generate_changelog.outputs.changelog }}
-          draft: false
-          prerelease: false
           files: >
             libzapitu-rf.tgz
           gzip: folders
