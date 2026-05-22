@@ -1,6 +1,7 @@
 import type { proto } from '../../WAProto'
 import type { Contact } from './Contact'
 import type { MinimalMessage } from './Message'
+import type { ReachoutTimelockState } from './State'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -60,9 +61,11 @@ export type AuthenticationCreds = SignalCreds & {
 	accountSyncCounter: number
 	accountSettings: AccountSettings
 	registered: boolean
+	nctSalt?: Uint8Array | undefined
 	pairingCode: string | undefined
 	lastPropHash: string | undefined
 	routingInfo: Buffer | undefined
+	reachoutTimeLock?: ReachoutTimelockState | undefined
 }
 
 export type SignalDataTypeMap = {

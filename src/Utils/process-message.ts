@@ -2,6 +2,7 @@ import { AxiosRequestConfig } from 'axios'
 import { proto } from '../../WAProto'
 import {
 	AuthenticationCreds,
+	AuthenticationState,
 	BaileysEventEmitter,
 	CacheStore,
 	Chat,
@@ -145,7 +146,8 @@ export function decryptPollVote(
 
 const processMessage = async (
 	message: proto.IWebMessageInfo,
-	{ shouldProcessHistoryMsg, placeholderResendCache, ev, creds, keyStore, logger, options }: ProcessMessageContext
+	{ shouldProcessHistoryMsg, placeholderResendCache, ev, creds, keyStore, logger, options }: ProcessMessageContext,
+	authState: AuthenticationState
 ) => {
 	const meId = creds.me!.id
 	const { accountSettings } = creds
@@ -199,7 +201,7 @@ const processMessage = async (
 						})
 					}
 
-					const data = await downloadAndProcessHistorySyncNotification(histNotification, options)
+					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, authState)
 
 					ev.emit('messaging-history.set', {
 						...data,

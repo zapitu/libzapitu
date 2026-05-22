@@ -10,7 +10,7 @@ import {
 	MIN_PREKEY_COUNT,
 	NOISE_WA_HEADER
 } from '../Defaults'
-import { DisconnectReason, SocketConfig } from '../Types'
+import { DisconnectReason, SocketConfig, XWAPaths } from '../Types'
 import {
 	addTransactionCapability,
 	aesEncryptCTR,
@@ -41,6 +41,16 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { WebSocketClient } from './Client'
+import { executeWMexQuery } from './mex'
+
+import {	
+	type NewChatMessageCapInfo,
+	QueryIds,
+	ReachoutTimelockEnforcementType,
+	type ReachoutTimelockState,
+	
+
+} from '../Types'
 
 /**
  * Connects to WA servers and performs:
@@ -717,6 +727,40 @@ export const makeSocket = (config: SocketConfig) => {
 		Object.assign(creds, update)
 	})
 
+	const fetchAccountReachoutTimelock = async () => {
+		const queryResult = await executeWMexQuery<{
+			is_active?: boolean
+			time_enforcement_ends?: string
+			enforcement_type: ReachoutTimelockEnforcementType
+		}>({}, QueryIds.REACHOUT_TIMELOCK, XWAPaths.xwa2_fetch_account_reachout_timelock, query, generateMessageTag)
+		const result: ReachoutTimelockState = {
+			isActive: !!queryResult?.is_active,
+			timeEnforcementEnds:
+				queryResult?.time_enforcement_ends && queryResult?.time_enforcement_ends !== '0'
+					? new Date(parseInt(queryResult.time_enforcement_ends, 10) * 1000)
+					: undefined,
+			enforcementType: queryResult?.enforcement_type ?? ReachoutTimelockEnforcementType.DEFAULT
+		}
+		ev.emit('connection.update', { reachoutTimeLock: result })
+		ev.emit('creds.update', { reachoutTimeLock: result })
+		return result
+	}
+
+	/**
+	 * Fetches your account's new chat limits.
+	 * @returns Returns the quota and the usage.
+	 */
+	const fetchNewChatMessageCap = async () => {
+		return executeWMexQuery<NewChatMessageCapInfo>(
+			{ input: { type: 'INDIVIDUAL_NEW_CHAT_MSG' } },
+			QueryIds.MESSAGE_CAPPING_INFO,
+			XWAPaths.xwa2_message_capping_info,
+			query,
+			generateMessageTag
+		)
+	}
+
+
 	return {
 		type: 'md' as 'md',
 		ws,
@@ -738,6 +782,9 @@ export const makeSocket = (config: SocketConfig) => {
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,
 		requestPairingCode,
+		fetchAccountReachoutTimelock,
+		fetchNewChatMessageCap,
+
 		/** Waits for the connection to WA to reach a state */
 		waitForConnectionUpdate: bindWaitForConnectionUpdate(ev),
 		sendWAMBuffer

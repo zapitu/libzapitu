@@ -1,6 +1,7 @@
+import { createHmac } from 'crypto'
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
-import { getBinaryNodeChild, getBinaryNodeChildren, isLidUser, jidNormalizedUser } from '../WABinary'
+import { getBinaryNodeChild, getBinaryNodeChildren, jidNormalizedUser } from '../WABinary'
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
 const TC_TOKEN_BUCKET_DURATION = 604800
@@ -75,12 +76,11 @@ export async function buildTcTokenFromJid({
 		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
 			// Opportunistic cleanup: remove expired token from store
 			if (tcTokenBuffer) {
-				
 				await authState.keys.set({
 					'contacts-tc-token': { [storageJid]: null }
 				})
-			
 			}
+
 			return baseContent.length > 0 ? baseContent : undefined
 		}
 
@@ -150,4 +150,10 @@ export async function storeTcTokensFromIqResult({ result, fallbackJid, keys, onN
 		})
 		onNewJidStored?.(storageJid)
 	}
+}
+
+export function computeCsToken(nctSalt: Uint8Array | Buffer, recipientLid: string): Uint8Array {
+	const hmac = createHmac('sha256', Buffer.from(nctSalt))
+	hmac.update(recipientLid, 'utf8')
+	return new Uint8Array(hmac.digest())
 }

@@ -20,6 +20,7 @@ import caches from './cache-utils'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
+export const ACCOUNT_RESTRICTED_TEXT = 'Your account has been restricted'
 
 export const NACK_REASONS = {
 	ParsingError: 487,

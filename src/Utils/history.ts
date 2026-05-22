@@ -7,6 +7,8 @@ import { isJidUser } from '../WABinary'
 import { toNumber } from './generics'
 import { normalizeMessageContent } from './messages'
 import { downloadContentFromMessage } from './messages-media'
+import { AuthenticationState } from '../Types'
+import caches from './cache-utils'
 
 const inflatePromise = promisify(inflate)
 
@@ -26,7 +28,8 @@ export const downloadHistory = async (msg: proto.Message.IHistorySyncNotificatio
 	return syncData
 }
 
-export const processHistoryMessage = (item: proto.IHistorySync) => {
+export const processHistoryMessage = (item: proto.IHistorySync, authState:  AuthenticationState) => {
+
 	const messages: proto.IWebMessageInfo[] = []
 	const contacts: Contact[] = []
 	const chats: Chat[] = []
@@ -36,13 +39,36 @@ export const processHistoryMessage = (item: proto.IHistorySync) => {
 		case proto.HistorySync.HistorySyncType.RECENT:
 		case proto.HistorySync.HistorySyncType.FULL:
 		case proto.HistorySync.HistorySyncType.ON_DEMAND:
+
+		// Extract LID-PN mappings for all sync types
+	for (const m of item.phoneNumberToLidMappings || []) {
+		if (m.lidJid && m.pnJid) {
+			caches.lidCache.set(m.pnJid, m.lidJid)
+		}
+	}
 			for (const chat of item.conversations! as Chat[]) {
 				contacts.push({
 					id: chat.id,
-					name: chat.name || undefined,
+					name: chat.displayName || chat.name || chat.username || undefined,
 					lid: chat.lidJid || undefined,
 					jid: isJidUser(chat.id) ? chat.id : undefined
 				})
+
+				const toNumberSafe = (v) => v?.toNumber ? v.toNumber() : v;
+				const tctokenLabel: string = chat.lidJid || chat.id
+
+			if (chat.tcToken) {
+				 authState.keys.set({
+					'contacts-tc-token': {
+						[tctokenLabel]: {
+							token: Buffer.from(chat.tcToken),
+							timestamp: String(toNumberSafe(chat.tcTokenTimestamp)),
+							senderTimestamp: toNumberSafe(chat.tcTokenSenderTimestamp)
+						}
+					}
+				})
+			}
+            
 
 				const msgs = chat.messages || []
 				delete chat.messages
@@ -95,10 +121,11 @@ export const processHistoryMessage = (item: proto.IHistorySync) => {
 
 export const downloadAndProcessHistorySyncNotification = async (
 	msg: proto.Message.IHistorySyncNotification,
-	options: AxiosRequestConfig<{}>
+	options: AxiosRequestConfig<{}>,
+	authstate: AuthenticationState
 ) => {
 	const historyMsg = await downloadHistory(msg, options)
-	return processHistoryMessage(historyMsg)
+	return processHistoryMessage(historyMsg, authstate)
 }
 
 export const getHistoryMsg = (message: proto.IMessage) => {

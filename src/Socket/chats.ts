@@ -683,8 +683,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				: undefined
 		})
 
-
-
 	const appPatch = async (patchCreate: WAPatchCreate) => {
 		const name = patchCreate.type
 		const myAppStateKeyId = authState.creds.myAppStateKeyId
@@ -962,15 +960,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					await doAppStateSync()
 				}
 			})(),
-			processMessage(msg, {
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options
-			})
+			processMessage(
+				msg,
+				{
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options
+				},
+				authState
+			)
 		])
 
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && pendingAppStateSync) {
@@ -993,7 +995,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 	})
-
 
 	ws.on('CB:ib,,dirty', async (node: BinaryNode) => {
 		const { attrs } = getBinaryNodeChild(node, 'dirty')!

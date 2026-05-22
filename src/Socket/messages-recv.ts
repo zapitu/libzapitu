@@ -8,16 +8,17 @@ import {
 	MessageReceiptType,
 	MessageRelayOptions,
 	MessageUserReceipt,
+	PresenceData,
 	SocketConfig,
 	WACallEvent,
 	WAMessageKey,
 	WAMessageStatus,
 	WAMessageStubType,
 	WAPatchName,
-	WAPresence,
-	PresenceData
+	WAPresence
 } from '../Types'
 import {
+	ACCOUNT_RESTRICTED_TEXT,
 	aesDecryptCTR,
 	aesEncryptGCM,
 	cleanMessage,
@@ -37,10 +38,10 @@ import {
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
+	SERVER_ERROR_CODES,
 	unixTimestampSeconds,
 	xmppPreKey,
-	xmppSignedPreKey,
-	SERVER_ERROR_CODES
+	xmppSignedPreKey
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import {
@@ -62,7 +63,6 @@ import {
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
-
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const { logger, retryRequestDelayMs, maxMsgRetryCount, getMessage, shouldIgnoreJid } = config
 	const sock = makeMessagesSocket(config)
@@ -81,7 +81,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		relayMessage,
 		sendReceipt,
 		uploadPreKeys,
-		sendPeerDataOperationMessage
+		sendPeerDataOperationMessage,
+		fetchAccountReachoutTimelock,
+		fetchNewChatMessageCap
 	} = sock
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
@@ -228,8 +230,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				receipt.attrs.participant = node.attrs.participant
 			}
 
-			if (retryCount <=2 && forceIncludeKeys) {
-				await assertSessions([jidNormalizedUser(author)], true);
+			if (retryCount <= 2 && forceIncludeKeys) {
+				await assertSessions([jidNormalizedUser(author)], true)
 				const { update, preKeys } = await getNextPreKeys(authState, 1)
 
 				const [keyId] = Object.keys(preKeys)
@@ -623,14 +625,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		for (const [i, msg] of msgs.entries()) {
 			if (msg) {
 				updateSendMessageAgainCount(ids[i], participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], isretry:true }				
-					msgRelayOpts.participant = {
-						jid: participant,
-						count: +retryNode.attrs.count					
-					
+				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], isretry: true }
+				msgRelayOpts.participant = {
+					jid: participant,
+					count: +retryNode.attrs.count
 				}
 
-				await relayMessage(key.remoteJid!, msg, msgRelayOpts,)
+				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -770,14 +771,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		const checkisValid = getBinaryNodeChild(node, 'unavailable')
-		if(checkisValid && checkisValid.attrs.type==='view_once'){
-			logger.debug({ key: node.attrs.key }, 'ignored msmsg viewOnce message');
-			const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '');
-			fullMessage.viewOnce = true;
-			await upsertMessage(fullMessage, 'append');
+		if (checkisValid && checkisValid.attrs.type === 'view_once') {
+			logger.debug({ key: node.attrs.key }, 'ignored msmsg viewOnce message')
+			const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
+			fullMessage.viewOnce = true
+			await upsertMessage(fullMessage, 'append')
 			await sendMessageAck(node)
 			return
-
 		}
 
 		const encNode = getBinaryNodeChild(node, 'enc')
@@ -827,6 +827,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		) {
 			ev.emit('chats.phoneNumberShare', { lid: node.attrs.from, jid: node.attrs.sender_pn })
 		}
+
 		if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 			if (
 				msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT ||
@@ -970,16 +971,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const callId = infoChild.attrs['call-id']
 		const from = infoChild.attrs.from || infoChild.attrs['call-creator']
 		status = getCallStatusFromNode(infoChild)
-		if(isLidUser(from) && infoChild.tag==='relaylatency')
-		{
-			const verify = callOfferCache.get(callId);
-			if(!verify)
-			{
-				status = 'offer';
-				callOfferCache.set(callId,true);
+		if (isLidUser(from) && infoChild.tag === 'relaylatency') {
+			const verify = callOfferCache.get(callId)
+			if (!verify) {
+				status = 'offer'
+				callOfferCache.set(callId, true)
 			}
-
 		}
+
 		const call: WACallEvent = {
 			chatId: attrs.from,
 			from,
@@ -1007,9 +1006,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// delete data once call has ended
 		if (status === 'reject' || status === 'accept' || status === 'timeout' || status === 'terminate') {
 			callOfferCache.del(call.id)
-			if(isLidUser(from))
-			{
-			 callOfferCache.del(from)	
+			if (isLidUser(from)) {
+				callOfferCache.del(from)
 			}
 		}
 
@@ -1023,6 +1021,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** tracks JIDs for which we have stored tctokens — used for periodic pruning */
 	const tcTokenKnownJids = new Set<string>()
+
+	const retryMissingTcToken = async (key: WAMessageKey, msgId?: string, jid?: string) => {
+		if (!msgId || !jid || tcTokenRetriedMsgIds.has(msgId)) {
+			if (msgId && tcTokenRetriedMsgIds.has(msgId)) {
+				logger.warn({ msgId, from: jid }, 'error 463: already retried, giving up')
+			}
+
+			return false
+		}
+
+		// Each entry auto-expires via setTimeout(60s), so the set
+		// is naturally bounded under normal conditions.
+		tcTokenRetriedMsgIds.add(msgId)
+		setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
+
+		const msg = await getMessage(key)
+		if (!msg) {
+			logger.warn({ msgId, from: jid }, 'error 463: no message found for retry')
+			return false
+		}
+
+		try {
+			await delay(1500)
+			await relayMessage(jid, msg, {
+				messageId: msgId,
+				useUserDevicesCache: true
+			})
+			logger.info({ msgId, from: jid }, 'error 463 retry succeeded')
+			return true
+		} catch (retryErr: any) {
+			logger.warn({ msgId, err: retryErr?.message }, 'error 463 retry failed')
+			return false
+		}
+	}
 
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
@@ -1043,39 +1075,37 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// error in acknowledgement,
 		// device could not display the message
-				if (attrs.error) {
+		if (attrs.error) {
 			if (attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
+				const reachoutTimeLock = await fetchAccountReachoutTimelock().catch(err => {
+					logger.warn({ err: err?.message }, 'failed to fetch reachout timelock after error 463')
+					return undefined
+				})
+
+				await fetchNewChatMessageCap().catch(err => {
+					logger.debug({ err: err?.message }, 'failed to fetch new chat message cap after error 463')
+				})
+
+				if (reachoutTimeLock?.isActive) {
+					ev.emit('messages.update', [
+						{
+							key,
+							update: {
+								status: WAMessageStatus.ERROR,
+								messageStubParameters: [attrs.error, ACCOUNT_RESTRICTED_TEXT]
+							}
+						}
+					])
+					return
+				}
+
 				// Single retry: the original getPrivacyTokens IQ triggered token issuance.
 				// After a brief delay the server should have pushed a privacy_token
 				// notification, making the re-send succeed.
 				const msgId = attrs.id
 				const jid = jidNormalizedUser(attrs.from)
-				if (msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
-					// Each entry auto-expires via setTimeout(60s), so the set
-					// is naturally bounded under normal conditions.
-					tcTokenRetriedMsgIds.add(msgId)
-					setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
-					let msg: proto.IMessage | undefined
-					
-						msg = await getMessage(key)
-					
-					if (msg) {
-						try {
-							await delay(1500)
-							await relayMessage(jid, msg, {
-								messageId: msgId,
-								useUserDevicesCache: true
-							})
-							logger.info({ msgId, from: jid }, 'error 463 retry succeeded')
-							return
-						} catch (retryErr: any) {
-							logger.warn({ msgId, err: retryErr?.message }, 'error 463 retry failed')
-						}
-					} else {
-						logger.warn({ msgId, from: jid }, 'error 463: no message found for retry')
-					}
-				} else if (msgId && tcTokenRetriedMsgIds.has(msgId)) {
-					logger.warn({ msgId, from: jid }, 'error 463: already retried, giving up')
+				if (await retryMissingTcToken(key, msgId, jid)) {
+					return
 				}
 			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
 				logger.warn(
@@ -1335,7 +1365,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-		const handlePrivacyTokenNotification = async (node: BinaryNode) => {
+	const handlePrivacyTokenNotification = async (node: BinaryNode) => {
 		const tokensNode = getBinaryNodeChild(node, 'tokens')
 		const from = jidNormalizedUser(node.attrs.from)
 		const issueTimestamp = unixTimestampSeconds()
@@ -1366,40 +1396,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-		const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
-			let presence: PresenceData | undefined
-			const jid = attrs.from
-			const participant = attrs.participant || attrs.from
-	
-			if (shouldIgnoreJid(jid)) {
-				return
-			}
-	
-			if (tag === 'presence') {
-				presence = {
-					lastKnownPresence: attrs.type === 'unavailable' ? 'unavailable' : 'available',
-					lastSeen: attrs.last && attrs.last !== 'deny' ? +attrs.last : undefined
-				}
-			} else if (Array.isArray(content)) {
-				const [firstChild] = content
-				let type = firstChild.tag as WAPresence
-				if (type === 'paused') {
-					type = 'available'
-				}
-	
-				if (firstChild.attrs?.media === 'audio') {
-					type = 'recording'
-				}
-	
-				presence = { lastKnownPresence: type }
-			} else {
-				logger.error({ tag, attrs, content }, 'recv invalid presence node')
-			}
-	
-			if (presence) {
-				ev.emit('presence.update', { id: jid, presences: { [participant]: presence } })
-			}
+	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
+		let presence: PresenceData | undefined
+		const jid = attrs.from
+		const participant = attrs.participant || attrs.from
+
+		if (shouldIgnoreJid(jid)) {
+			return
 		}
+
+		if (tag === 'presence') {
+			presence = {
+				lastKnownPresence: attrs.type === 'unavailable' ? 'unavailable' : 'available',
+				lastSeen: attrs.last && attrs.last !== 'deny' ? +attrs.last : undefined
+			}
+		} else if (Array.isArray(content)) {
+			const [firstChild] = content
+			let type = firstChild.tag as WAPresence
+			if (type === 'paused') {
+				type = 'available'
+			}
+
+			if (firstChild.attrs?.media === 'audio') {
+				type = 'recording'
+			}
+
+			presence = { lastKnownPresence: type }
+		} else {
+			logger.error({ tag, attrs, content }, 'recv invalid presence node')
+		}
+
+		if (presence) {
+			ev.emit('presence.update', { id: jid, presences: { [participant]: presence } })
+		}
+	}
 
 	// recv a message
 	ws.on('CB:message', (node: BinaryNode) => {
@@ -1464,6 +1494,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendRetryRequest,
 		rejectCall,
 		fetchMessageHistory,
+		fetchNewChatMessageCap,
+		fetchAccountReachoutTimelock,
 		requestPlaceholderResend
 	}
 }
