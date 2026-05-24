@@ -1,3 +1,28 @@
+# [1.0.0-alpha.13](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.12...v1.0.0-alpha.13) (2026-05-24)
+
+
+### Bug Fixes
+
+* standardize string quotes and enhance version alignment in release workflows ([4057f16](https://github.com/zapitu/libzapitu/commit/4057f16bc1d76e4c8161f984e0ef06c1bba76868))
+
+
+
+# [1.0.0-alpha.12](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.11...v1.0.0-alpha.12) (2026-05-22)
+
+
+### Bug Fixes
+
+* add CacheStore type annotations for cache variables in socket and utility files ([fb80bfa](https://github.com/zapitu/libzapitu/commit/fb80bfab73062aeab3f80c61dd8cf25a304925f4))
+* remove duplicate name declaration in publish-release workflow ([89a0ec9](https://github.com/zapitu/libzapitu/commit/89a0ec9e5f08a43f594f2f0825e1be8496681006))
+* update version to 1.0.0-alpha.12 in package.json ([bcbb67f](https://github.com/zapitu/libzapitu/commit/bcbb67f88243643e60be628ee7a1c293b65b661a))
+
+
+### Features
+
+* enhance publish-release workflow with improved caching and changelog generation ([cc58945](https://github.com/zapitu/libzapitu/commit/cc5894544636106de53cc0db81b9e48f9ff2dbb2))
+
+
+
 # [1.0.0-alpha.11](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.10...v1.0.0-alpha.11) (2026-03-11)
 
 
