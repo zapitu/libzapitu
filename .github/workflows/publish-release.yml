@@ -3,13 +3,18 @@ name: Publish Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 permissions: write-all
 
 jobs:
   github-release:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.sync_tag.outputs.release_sha }}
+      release_tag: ${{ steps.sync_tag.outputs.tag }}
+      release_version: ${{ steps.sync_tag.outputs.version }}
+      retagged: ${{ steps.sync_tag.outputs.retagged }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -23,6 +28,50 @@ jobs:
         uses: actions/setup-node@v3.6.0
         with:
           node-version: 20.x
+
+      - name: Validate tag and align package version
+        id: sync_tag
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION). Aligning package.json and retagging."
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git tag -d "$TAG_NAME" || true
+            git push origin ":refs/tags/$TAG_NAME" || true
+
+            git fetch origin "$DEFAULT_BRANCH":"$DEFAULT_BRANCH"
+            git checkout "$DEFAULT_BRANCH"
+
+            npx json -I -f package.json -e "this.version='$TAG_VERSION'"
+            git add package.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(release): align package version with $TAG_NAME"
+            fi
+
+            RELEASE_SHA=$(git rev-parse HEAD)
+            git tag "$TAG_NAME" "$RELEASE_SHA"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+            git push origin "refs/tags/$TAG_NAME"
+            RETAGGED=true
+          else
+            RELEASE_SHA=$(git rev-parse HEAD)
+            RETAGGED=false
+          fi
+
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "retagged=$RETAGGED" >> "$GITHUB_OUTPUT"
 
       - name: Get yarn cache directory path
         id: yarn-cache-dir-path
@@ -53,25 +102,28 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
+        if: steps.sync_tag.outputs.retagged != 'true'
         uses: meeDamian/github-release@2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          commitish: ${{ github.sha }}
-          name: ${{ github.ref_name }}
+          tag: ${{ steps.sync_tag.outputs.tag }}
+          commitish: ${{ steps.sync_tag.outputs.release_sha }}
+          name: ${{ steps.sync_tag.outputs.tag }}
           body: ${{ steps.generate_changelog.outputs.changelog }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.sync_tag.outputs.tag, '-') }}
           allow_override: true
 
   npm-publish:
     runs-on: ubuntu-latest
     needs: github-release
+    if: needs.github-release.outputs.retagged != 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          ref: ${{ needs.github-release.outputs.release_sha }}
 
       - name: Fetching tags
         run: git fetch --tags -f || true
@@ -80,7 +132,7 @@ jobs:
         uses: actions/setup-node@v3.6.0
         with:
           node-version: 20.x
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -109,13 +161,13 @@ jobs:
       - name: Validate tag and publishability
         id: publish_guard
         run: |
-          set -e
-          TAG="${GITHUB_REF_NAME#v}"
+          set -euo pipefail
+          TAG="${{ needs.github-release.outputs.release_version }}"
           PKG_VERSION=$(node -p "require('./package.json').version")
 
           if [ "$TAG" != "$PKG_VERSION" ]; then
             echo "::error::Tag version ($TAG) does not match package.json version ($PKG_VERSION)."
-            echo "Fix by bumping package.json to $TAG or tagging the commit that already has version $TAG."
+            echo "Tag/package synchronization failed unexpectedly."
             exit 1
           fi
 
@@ -126,6 +178,10 @@ jobs:
           fi
 
           echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        if: steps.publish_guard.outputs.publish == 'true'
+        run: npm run build:tsc
 
       - name: Publish in NPM (as `libzapitu-rf` and aliases)
         if: steps.publish_guard.outputs.publish == 'true'

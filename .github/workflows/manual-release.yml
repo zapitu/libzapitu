@@ -5,9 +5,9 @@ on:
     inputs:
       increment:
         type: string
-        description: "Must be: patch, minor, major, pre* or <version>"
+        description: 'Must be: patch, minor, major, pre* or <version>'
         required: true
-        default: "patch"
+        default: 'patch'
 
 jobs:
   manual-release:
@@ -52,6 +52,9 @@ jobs:
           else
             yarn install --no-lockfile
           fi
+
+      - name: Build
+        run: npm run build:tsc
 
       - name: Release
         run: npx release-it --ci --increment ${{ github.event.inputs.increment }}
