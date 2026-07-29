@@ -1,25 +1,30 @@
 /**
- * Worker proxy — parent-side façade.
+ * Worker proxy — parent-side pool manager.
  *
- * Spawns a worker_threads child that runs the real makeWASocket and
- * proxies every method call and event back and forth transparently.
+ * Maintains a pool of worker_threads children, each running a real
+ * makeWASocket.  The pool automatically distributes new socket requests
+ * across workers and provides lifecycle control.
  *
  * Usage (encapsulated mode):
  *   import makeWASocket from 'libzapitu-rf/worker'
+ *   const sock = makeWASocket({ ... })
+ *   sock.ev.on('messages.upsert', ...)
+ *   await sock.sendMessage(...)
  *
- * All non-serializable config callbacks (getMessage, shouldIgnoreJid, …)
- * are automatically forwarded from the worker to the parent, executed
- * here, and the result is sent back.
+ * Pool control (available on the returned socket):
+ *   sock.pool — { size, active, idle, totalSockets }
+ *
+ * Global pool control:
+ *   import { resizePool, drainPool, getStats } from 'libzapitu-rf/worker'
  */
 import { Worker } from 'worker_threads'
 import { EventEmitter } from 'events'
+import { cpus } from 'os'
 import { join } from 'path'
 import type { UserFacingSocketConfig } from '../Types'
 
 // ---------------------------------------------------------------------------
-// Keys whose values are functions that cannot be serialized across
-// the worker boundary. The proxy will replace them with stubs on the
-// worker side and invoke the real callbacks here on the parent side.
+// Types
 // ---------------------------------------------------------------------------
 const CALLBACK_CONFIG_KEYS = [
 	'getMessage',
@@ -32,149 +37,278 @@ const CALLBACK_CONFIG_KEYS = [
 
 type CallbackKey = (typeof CALLBACK_CONFIG_KEYS)[number]
 
+interface WorkerSlot {
+	worker: Worker
+	/** Number of active sockets on this worker */
+	load: number
+	/** Per-socket event emitters keyed by a unique socketId */
+	emitters: Map<number, EventEmitter>
+	/** Per-socket callback stores */
+	callbacks: Map<number, Partial<Record<CallbackKey, Function>>>
+	/** Pending RPC calls keyed by request id */
+	pending: Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>
+}
+
+interface PoolStats {
+	/** Total workers in the pool */
+	size: number
+	/** Workers currently handling at least one socket */
+	active: number
+	/** Workers with zero sockets */
+	idle: number
+	/** Total sockets across all workers */
+	totalSockets: number
+}
+
 // ---------------------------------------------------------------------------
-// Helpers
+// Globals
 // ---------------------------------------------------------------------------
 let _reqId = 0
 const nextReqId = (): number => ++_reqId
+let _socketId = 0
+const nextSocketId = (): number => ++_socketId
+
+const workerScript = join(__dirname, 'child.js')
+
+/** Active worker slots */
+const slots: WorkerSlot[] = []
+
+/** Maximum workers allowed (default: CPU count) */
+let maxWorkers: number = cpus().length
 
 // ---------------------------------------------------------------------------
-// makeWASocket (proxy)
+// Pool management
+// ---------------------------------------------------------------------------
+
+function getStats(): PoolStats {
+	const active = slots.filter(s => s.load > 0).length
+	return {
+		size: slots.length,
+		active,
+		idle: slots.length - active,
+		totalSockets: slots.reduce((sum, s) => sum + s.load, 0),
+	}
+}
+
+/**
+ * Find the best worker to place a new socket on.
+ * Strategy: pick the worker with the lowest load; if all are at capacity
+ * and we haven't hit maxWorkers, spawn a new one.
+ */
+function acquireSlot(): WorkerSlot {
+	// Find least-loaded existing worker
+	let best: WorkerSlot | undefined = slots[0]
+	for (let i = 1; i < slots.length; i++) {
+		if (slots[i].load < best!.load) {
+			best = slots[i]
+		}
+	}
+
+	// If the best worker already has sockets and we can grow, spawn a new one
+	if (best && best.load > 0 && slots.length < maxWorkers) {
+		return spawnWorker()
+	}
+
+	if (!best) {
+		return spawnWorker()
+	}
+
+	return best
+}
+
+function spawnWorker(): WorkerSlot {
+	const worker = new Worker(workerScript)
+
+	const slot: WorkerSlot = {
+		worker,
+		load: 0,
+		emitters: new Map(),
+		callbacks: new Map(),
+		pending: new Map(),
+	}
+
+	// Global message handler — dispatches to the right socket's emitter
+	worker.on('message', (msg: any) => {
+		if (!msg || typeof msg !== 'object') return
+
+		const socketId = msg.socketId as number | undefined
+
+		switch (msg.type) {
+			case 'event':
+				if (socketId !== undefined) {
+					const ev = slot.emitters.get(socketId)
+					if (ev) ev.emit(msg.event, msg.data)
+				}
+				break
+
+			case 'result': {
+				const p = slot.pending.get(msg.id)
+				if (p) {
+					slot.pending.delete(msg.id)
+					if (msg.error) {
+						p.reject(new Error(msg.error))
+					} else {
+						p.resolve(msg.result)
+					}
+				}
+				break
+			}
+
+			case 'callback-call':
+				if (socketId !== undefined) {
+					handleCallbackCall(slot, socketId, msg)
+				}
+				break
+		}
+	})
+
+	worker.on('error', () => {
+		const idx = slots.indexOf(slot)
+		if (idx !== -1) slots.splice(idx, 1)
+	})
+
+	worker.on('exit', () => {
+		const idx = slots.indexOf(slot)
+		if (idx !== -1) slots.splice(idx, 1)
+	})
+
+	slots.push(slot)
+	return slot
+}
+
+async function handleCallbackCall(
+	slot: WorkerSlot,
+	socketId: number,
+	msg: { id: number; key: CallbackKey; args: unknown[] }
+) {
+	const { id, key, args } = msg
+	const store = slot.callbacks.get(socketId)
+	const fn = store?.[key]
+	if (!fn) {
+		return slot.worker.postMessage({
+			type: 'callback-result',
+			socketId,
+			id,
+			error: `No callback registered for "${key}"`,
+		})
+	}
+	try {
+		const result = await fn(...args)
+		slot.worker.postMessage({ type: 'callback-result', socketId, id, result })
+	} catch (err: any) {
+		slot.worker.postMessage({
+			type: 'callback-result',
+			socketId,
+			id,
+			error: err?.message || String(err),
+		})
+	}
+}
+
+/**
+ * Resize the pool. If shrinking, idle workers are terminated first.
+ * Active workers are never forcefully killed by resize.
+ */
+async function resizePool(newSize: number): Promise<void> {
+	if (newSize < 1) newSize = 1
+	maxWorkers = newSize
+
+	// Terminate excess idle workers
+	while (slots.length > maxWorkers) {
+		const idleSlot = slots.find(s => s.load === 0)
+		if (!idleSlot) break // all busy, can't shrink further
+		const idx = slots.indexOf(idleSlot)
+		slots.splice(idx, 1)
+		await idleSlot.worker.terminate()
+	}
+}
+
+/**
+ * Drain the pool: wait until all sockets are closed, then terminate all workers.
+ */
+async function drainPool(): Promise<void> {
+	// Wait for all sockets to close (load drops to 0)
+	await new Promise<void>(resolve => {
+		const check = () => {
+			if (slots.every(s => s.load === 0)) {
+				resolve()
+			} else {
+				setTimeout(check, 100)
+			}
+		}
+		check()
+	})
+
+	// Terminate all workers
+	await Promise.all(slots.map(s => s.worker.terminate()))
+	slots.length = 0
+}
+
+// ---------------------------------------------------------------------------
+// makeWASocket (pool-aware proxy)
 // ---------------------------------------------------------------------------
 const makeWASocket = (config: UserFacingSocketConfig) => {
-	// ---- Extract non-serializable callbacks from config ------------------
+	const socketId = nextSocketId()
+
+	// ---- Extract non-serializable callbacks ------------------------------
 	const callbackStore: Partial<Record<CallbackKey, Function>> = {}
 	const serializableConfig: any = { ...config }
 
 	for (const k of CALLBACK_CONFIG_KEYS) {
 		if (typeof (serializableConfig as any)[k] === 'function') {
 			callbackStore[k as CallbackKey] = (serializableConfig as any)[k]
-			// Replace with a sentinel so the worker creates a forwarding stub.
-			// The child.ts code checks for function type to replace, so we
-			// keep a dummy function that the child will detect and override.
 			;(serializableConfig as any)[k] = '__proxy_callback__'
 		}
 	}
 
-	// ---- Spawn worker ----------------------------------------------------
-	const workerScript = join(__dirname, 'child.js')
-	const worker = new Worker(workerScript, {
-		workerData: { config: serializableConfig },
+	// ---- Acquire a worker slot -------------------------------------------
+	const slot = acquireSlot()
+	slot.load++
+	slot.emitters.set(socketId, new EventEmitter())
+	slot.callbacks.set(socketId, callbackStore)
+
+	// ---- Send init message to the worker for this socket -----------------
+	slot.worker.postMessage({
+		type: 'init',
+		socketId,
+		config: serializableConfig,
 	})
 
-	// ---- Public event emitter --------------------------------------------
-	const ev = new EventEmitter()
+	// ---- Public event emitter (local to this socket) ---------------------
+	const ev = slot.emitters.get(socketId)!
 
-	// ---- Pending RPC calls -----------------------------------------------
-	const pending = new Map<
-		number,
-		{ resolve: (v: any) => void; reject: (e: Error) => void }
-	>()
-
-	// ---- Handle messages from worker -------------------------------------
-	worker.on('message', (msg: any) => {
-		if (!msg || typeof msg !== 'object') return
-
-		switch (msg.type) {
-			// --- Forwarded event from the socket ---
-			case 'event':
-				ev.emit(msg.event, msg.data)
-				break
-
-			// --- RPC method/property result ---
-			case 'result':
-				{
-					const p = pending.get(msg.id)
-					if (p) {
-						pending.delete(msg.id)
-						if (msg.error) {
-							p.reject(new Error(msg.error))
-						} else {
-							p.resolve(msg.result)
-						}
-					}
-				}
-				break
-
-			// --- Callback invocation forwarded from worker ---
-			case 'callback-call':
-				handleCallbackCall(msg)
-				break
-		}
-	})
-
-	// ---- Handle forwarded config callbacks -------------------------------
-	async function handleCallbackCall(msg: {
-		id: number
-		key: CallbackKey
-		args: unknown[]
-	}) {
-		const { id, key, args } = msg
-		const fn = callbackStore[key]
-		if (!fn) {
-			return worker.postMessage({
-				type: 'callback-result',
-				id,
-				error: `No callback registered for "${key}"`,
-			})
-		}
-		try {
-			const result = await fn(...args)
-			worker.postMessage({ type: 'callback-result', id, result })
-		} catch (err: any) {
-			worker.postMessage({
-				type: 'callback-result',
-				id,
-				error: err?.message || String(err),
-			})
-		}
-	}
-
-	// ---- RPC helper: call a method on the worker -------------------------
+	// ---- RPC helper ------------------------------------------------------
 	const rpcCall = (method: string, args: unknown[]): Promise<unknown> => {
 		const id = nextReqId()
 		return new Promise((resolve, reject) => {
-			pending.set(id, { resolve, reject })
-			worker.postMessage({ type: 'call', id, method, args })
+			slot.pending.set(id, { resolve, reject })
+			slot.worker.postMessage({ type: 'call', socketId, id, method, args })
 		})
 	}
 
 	// ---- Build the proxy object ------------------------------------------
-	// We use a Proxy so that method calls are transparently forwarded to
-	// the worker thread. The event emitter `ev` is handled locally.
-	//
-	// NOTE: Because JavaScript Proxy `get` traps cannot distinguish a
-	// property read (`x.foo`) from a method call (`x.foo()`), every
-	// property access returns an async RPC function. Synchronous property
-	// reads (except `ev`) will return a Promise instead of the raw value.
-	// If you need to read a property value synchronously, await it:
-	//   const user = await sock.user
-	// This is an acceptable trade-off for a worker-encapsulated socket.
 	const socketProxy = new Proxy(
 		{ ev },
 		{
 			get(_target, prop: string) {
 				if (prop === 'ev') return ev
-				if (prop === 'then') return undefined // prevent Promise-like confusion
+				if (prop === 'then') return undefined
+				if (prop === 'pool') return getStats()
 
-				// end() must terminate the worker after the socket closes
 				if (prop === 'end') {
 					return async (...args: unknown[]) => {
 						try { await rpcCall('end', args) } catch (_) { /* ok */ }
-						await worker.terminate()
+						cleanupSocket(slot, socketId)
 					}
 				}
 
-				// logout() should also terminate the worker
 				if (prop === 'logout') {
 					return async (...args: unknown[]) => {
 						try { await rpcCall('logout', args) } catch (_) { /* ok */ }
-						await worker.terminate()
+						cleanupSocket(slot, socketId)
 					}
 				}
 
-				// Return an async function that proxies the method call.
-				// For property reads the user must `await sock.property`.
 				return (...args: unknown[]) => rpcCall(prop, args)
 			},
 		}
@@ -183,5 +317,23 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	return socketProxy
 }
 
+function cleanupSocket(slot: WorkerSlot, socketId: number): void {
+	slot.emitters.delete(socketId)
+	slot.callbacks.delete(socketId)
+	slot.load = Math.max(0, slot.load - 1)
+
+	// If the worker is now idle and we're over capacity, terminate it
+	if (slot.load === 0 && slots.length > maxWorkers) {
+		const idx = slots.indexOf(slot)
+		if (idx !== -1) {
+			slots.splice(idx, 1)
+			slot.worker.terminate()
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
 export default makeWASocket
-export { makeWASocket }
+export { makeWASocket, getStats, resizePool, drainPool }

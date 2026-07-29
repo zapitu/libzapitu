@@ -2,8 +2,11 @@
  * Worker child entry point.
  * Runs makeWASocket inside a worker_threads context and bridges all
  * method calls and events between the parent and the WA socket.
+ *
+ * Supports multiple concurrent sockets per worker — each identified
+ * by a unique `socketId` sent in the `init` message from the parent.
  */
-import { isMainThread, parentPort, workerData } from 'worker_threads'
+import { isMainThread, parentPort } from 'worker_threads'
 import makeWASocket from '../Socket'
 import type { UserFacingSocketConfig } from '../Types'
 import type { BaileysEventMap } from '../Types/Events'
@@ -16,13 +19,8 @@ if (isMainThread || !parentPort) {
 }
 
 // ---------------------------------------------------------------------------
-// Config with callback stubs replaced
+// Per-socket state
 // ---------------------------------------------------------------------------
-const config: UserFacingSocketConfig = workerData.config
-
-// Wrap any config callbacks that can't be serialized.
-// The proxy side must inject stubs that send/receive messages to/from
-// the parent so that non-serializable callbacks still work.
 const CALLBACK_PROXIED_KEYS = [
 	'getMessage',
 	'shouldIgnoreJid',
@@ -34,23 +32,28 @@ const CALLBACK_PROXIED_KEYS = [
 
 type ProxiedCallbackKey = (typeof CALLBACK_PROXIED_KEYS)[number]
 
-/**
- * Generate unique monotonic request IDs for RPC communication.
- */
+interface SocketEntry {
+	sock: ReturnType<typeof makeWASocket>
+	config: UserFacingSocketConfig
+}
+
+const sockets = new Map<number, SocketEntry>()
+
 let _reqId = 0
 const nextReqId = (): number => ++_reqId
 
-/**
- * Send a callback invocation to the parent and wait for the result.
- */
-function proxyCallback<K extends ProxiedCallbackKey>(
-	key: K,
+// ---------------------------------------------------------------------------
+// Callback proxy helper
+// ---------------------------------------------------------------------------
+function proxyCallback(
+	socketId: number,
+	key: ProxiedCallbackKey,
 	...args: unknown[]
 ): Promise<unknown> {
 	const id = nextReqId()
 	return new Promise((resolve, reject) => {
 		const onMsg = (msg: any) => {
-			if (msg?.type === 'callback-result' && msg.id === id) {
+			if (msg?.type === 'callback-result' && msg.id === id && msg.socketId === socketId) {
 				parentPort!.off('message', onMsg)
 				if (msg.error) {
 					reject(new Error(msg.error))
@@ -60,73 +63,94 @@ function proxyCallback<K extends ProxiedCallbackKey>(
 			}
 		}
 		parentPort!.on('message', onMsg)
-		parentPort!.postMessage({ type: 'callback-call', id, key, args })
+		parentPort!.postMessage({ type: 'callback-call', socketId, id, key, args })
 	})
 }
 
-// Replace proxied callbacks with forwarding stubs.
-// The proxy replaces non-serializable callbacks with the sentinel string
-// '__proxy_callback__' — if we see that value, install a forwarding stub.
-for (const k of CALLBACK_PROXIED_KEYS) {
-	if ((config as any)[k] === '__proxy_callback__') {
-		;(config as any)[k] = (...args: unknown[]) => proxyCallback(k, ...args)
+// ---------------------------------------------------------------------------
+// Create a socket for a given socketId
+// ---------------------------------------------------------------------------
+function createSocket(socketId: number, rawConfig: any): void {
+	const config: UserFacingSocketConfig = rawConfig
+
+	// Replace sentinel callbacks with forwarding stubs
+	for (const k of CALLBACK_PROXIED_KEYS) {
+		if ((config as any)[k] === '__proxy_callback__') {
+			;(config as any)[k] = (...args: unknown[]) => proxyCallback(socketId, k, ...args)
+		}
 	}
+
+	const sock = makeWASocket(config)
+
+	// Forward ALL events to the parent, tagged with socketId
+	;(sock.ev as any).on('event', (map: Partial<BaileysEventMap>) => {
+		for (const [event, data] of Object.entries(map)) {
+			parentPort!.postMessage({ type: 'event', socketId, event, data })
+		}
+	})
+
+	sockets.set(socketId, { sock, config })
 }
 
 // ---------------------------------------------------------------------------
-// Create the socket
-// ---------------------------------------------------------------------------
-const sock = makeWASocket(config)
-
-// ---------------------------------------------------------------------------
-// Forward ALL events to the parent
-// ---------------------------------------------------------------------------
-// The event emitter is on sock.ev. We listen to all possible events by
-// listening on the raw 'event' aggregated event, which fires before
-// individual typed events.
-;(sock.ev as any).on('event', (map: Partial<BaileysEventMap>) => {
-	for (const [event, data] of Object.entries(map)) {
-		parentPort!.postMessage({ type: 'event', event, data })
-	}
-})
-
-// ---------------------------------------------------------------------------
-// Handle incoming RPC method calls from the parent
+// Handle incoming messages from the parent
 // ---------------------------------------------------------------------------
 parentPort.on('message', async (msg: any) => {
-	if (!msg || msg.type !== 'call') {
-		return
-	}
+	if (!msg || typeof msg !== 'object') return
 
-	const { id, method, args } = msg
-
-	try {
-		// Resolve the method on the socket object (supports dot-separated paths)
-		let target: any = sock
-		const path = method.split('.')
-		for (const segment of path) {
-			if (target === null || target === undefined) {
-				throw new Error(`Cannot read property '${segment}' of ${target}`)
+	switch (msg.type) {
+		// --- Initialize a new socket on this worker ---
+		case 'init': {
+			const { socketId, config } = msg
+			if (sockets.has(socketId)) {
+				// Already initialized — ignore duplicate
+				return
 			}
-			target = target[segment]
+			createSocket(socketId, config)
+			break
 		}
 
-		if (typeof target === 'function') {
-			const result = await target.apply(
-				path.length > 1 ? resolveTarget(sock, path.slice(0, -1)) : sock,
-				args || []
-			)
-			parentPort!.postMessage({ type: 'result', id, result })
-		} else {
-			// Property access
-			parentPort!.postMessage({ type: 'result', id, result: target })
+		// --- RPC method call ---
+		case 'call': {
+			const { socketId, id, method, args } = msg
+			const entry = sockets.get(socketId)
+			if (!entry) {
+				parentPort!.postMessage({
+					type: 'result',
+					socketId,
+					id,
+					error: `Socket ${socketId} not found`,
+				})
+				return
+			}
+
+			try {
+				let target: any = entry.sock
+				const path = method.split('.')
+				for (const segment of path) {
+					if (target === null || target === undefined) {
+						throw new Error(`Cannot read property '${segment}' of ${target}`)
+					}
+					target = target[segment]
+				}
+
+				if (typeof target === 'function') {
+					const thisCtx = path.length > 1 ? resolveTarget(entry.sock, path.slice(0, -1)) : entry.sock
+					const result = await target.apply(thisCtx, args || [])
+					parentPort!.postMessage({ type: 'result', socketId, id, result })
+				} else {
+					parentPort!.postMessage({ type: 'result', socketId, id, result: target })
+				}
+			} catch (err: any) {
+				parentPort!.postMessage({
+					type: 'result',
+					socketId,
+					id,
+					error: err?.message || String(err),
+				})
+			}
+			break
 		}
-	} catch (err: any) {
-		parentPort!.postMessage({
-			type: 'result',
-			id,
-			error: err?.message || String(err),
-		})
 	}
 })
 
@@ -141,6 +165,3 @@ function resolveTarget(obj: any, path: string[]): any {
 	}
 	return t
 }
-
-// Signal that the worker is ready
-parentPort.postMessage({ type: 'ready' })
