@@ -1,3 +1,35 @@
+# [1.0.0-alpha.17](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.16...v1.0.0-alpha.17) (2026-07-29)
+
+
+### Features
+
+* add worker thread entry point for makeWASocket ([2907550](https://github.com/zapitu/libzapitu/commit/2907550434208effd8bbd86ec11c8eb89a9ca5e2))
+* support multiple concurrent sockets per worker thread ([50623f3](https://github.com/zapitu/libzapitu/commit/50623f34d4695fda77cda46c6dc9a5caa4960d8e))
+
+
+
+# [1.0.0-alpha.16](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.15...v1.0.0-alpha.16) (2026-07-02)
+
+
+
+# [1.0.0-alpha.15](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.14...v1.0.0-alpha.15) (2026-07-02)
+
+
+### Bug Fixes
+
+* remove conditional checks for retagged status in GitHub release and npm publish jobs ([04d7460](https://github.com/zapitu/libzapitu/commit/04d74608e39b4e3073e5a6c32ac1acd8f6a3976d))
+
+
+
+# [1.0.0-alpha.14](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.13...v1.0.0-alpha.14) (2026-07-02)
+
+
+### Features
+
+* implement passkey pairing events and enhance socket handling for passkey requests ([cde91b5](https://github.com/zapitu/libzapitu/commit/cde91b54c9d4dcc002ebaf6959c966d3831aa868))
+
+
+
 # [1.0.0-alpha.13](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.12...v1.0.0-alpha.13) (2026-05-24)
 
 
