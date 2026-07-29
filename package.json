@@ -24,6 +24,11 @@
       "default": "./lib/worker/index.js"
     }
   },
+  "typesVersions": {
+    "*": {
+      "worker": ["./lib/worker/index.d.ts"]
+    }
+  },
   "files": [
     "lib/*",
     "lib/worker/*",
