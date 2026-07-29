@@ -1,6 +1,6 @@
 {
   "name": "libzapitu-rf",
-  "version": "1.0.0-alpha.17",
+  "version": "1.0.0-alpha.18",
   "description": "A WebSockets library for interacting with WhatsApp Web",
   "keywords": [
     "whatsapp",
@@ -26,7 +26,9 @@
   },
   "typesVersions": {
     "*": {
-      "worker": ["./lib/worker/index.d.ts"]
+      "worker": [
+        "./lib/worker/index.d.ts"
+      ]
     }
   },
   "files": [

@@ -1,3 +1,12 @@
+# [1.0.0-alpha.18](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.17...v1.0.0-alpha.18) (2026-07-29)
+
+
+### Features
+
+* add typesVersions for worker subpath ([46ecb1a](https://github.com/zapitu/libzapitu/commit/46ecb1ae3de3c9547933b5201483b2d493544d54))
+
+
+
 # [1.0.0-alpha.17](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.16...v1.0.0-alpha.17) (2026-07-29)
 
 
