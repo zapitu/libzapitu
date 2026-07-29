@@ -1,3 +1,12 @@
+# [1.0.0-alpha.19](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.18...v1.0.0-alpha.19) (2026-07-29)
+
+
+### Features
+
+* **worker:** add logging to worker child and proxy ([e75b231](https://github.com/zapitu/libzapitu/commit/e75b231f68d0dc9274629f3ddc97f15c8565822e))
+
+
+
 # [1.0.0-alpha.18](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.17...v1.0.0-alpha.18) (2026-07-29)
 
 
