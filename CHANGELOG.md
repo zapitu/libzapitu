@@ -1,3 +1,12 @@
+# [1.0.0-alpha.20](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.19...v1.0.0-alpha.20) (2026-07-29)
+
+
+### Features
+
+* **worker:** add test example and sanitize child proxy errors ([706440d](https://github.com/zapitu/libzapitu/commit/706440db2ee8e1a828eba62ff08a805a79dc4a68))
+
+
+
 # [1.0.0-alpha.19](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.18...v1.0.0-alpha.19) (2026-07-29)
 
 
