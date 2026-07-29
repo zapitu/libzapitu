@@ -45,12 +45,18 @@ interface WorkerSlot {
 	load: number
 	/** Per-socket event emitters keyed by a unique socketId */
 	emitters: Map<number, EventEmitter>
+	/** Per-socket raw WS event emitters */
+	wsEmitters: Map<number, EventEmitter>
+	/** Per-socket local property stores (for wsocket.id, wsocket.user, etc.) */
+	props: Map<number, Record<string, unknown>>
 	/** Per-socket callback stores */
 	callbacks: Map<number, Partial<Record<CallbackKey, Function>>>
 	/** Per-socket real auth.keys (SignalKeyStore) — proxied separately */
 	keystores: Map<number, any>
 	/** Per-socket loggers (child loggers from the user's config) */
 	loggers: Map<number, ILogger>
+	/** Per-socket original configs (used to sync creds.update back to parent) */
+	configs: Map<number, UserFacingSocketConfig>
 	/** Pending RPC calls keyed by request id */
 	pending: Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>
 }
@@ -108,6 +114,10 @@ function createNoopLogger(): ILogger {
 /**
  * Recursively revive objects that were sanitized by the child's
  * sanitizeForPostMessage (e.g. Error sentinels).
+ *
+ * IMPORTANT: structured clone already produces a perfect copy of the data.
+ * We only need to recursively look for __error__ sentinels and convert
+ * them back to Error instances. Everything else passes through unchanged.
  */
 function revivePostMessage(value: unknown): any {
 	if (value !== null && typeof value === 'object') {
@@ -118,13 +128,28 @@ function revivePostMessage(value: unknown): any {
 			return err
 		}
 		if (Array.isArray(value)) {
-			return value.map(revivePostMessage)
+			// Arrays: recurse to revive any Error sentinels inside
+			let hasError = false
+			const result = value.map(v => {
+				const revived = revivePostMessage(v)
+				if (revived !== v) hasError = true
+				return revived
+			})
+			return hasError ? result : value
 		}
-		const result: any = {}
-		for (const key of Object.keys(value as object)) {
-			result[key] = revivePostMessage((value as any)[key])
+		// Plain objects: only recurse if they might contain __error__ sentinels.
+		// Check one level deep to avoid unnecessary cloning of large objects.
+		if (value.constructor === Object || value.constructor === undefined) {
+			let changed = false
+			const result: any = {}
+			for (const key of Object.keys(value as object)) {
+				const orig = (value as any)[key]
+				const revived = revivePostMessage(orig)
+				if (revived !== orig) changed = true
+				result[key] = revived
+			}
+			return changed ? result : value
 		}
-		return result
 	}
 	return value
 }
@@ -178,9 +203,12 @@ function spawnWorker(): WorkerSlot {
 		worker,
 		load: 0,
 		emitters: new Map(),
+		wsEmitters: new Map(),
+		props: new Map(),
 		callbacks: new Map(),
 		keystores: new Map(),
 		loggers: new Map(),
+		configs: new Map(),
 		pending: new Map(),
 	}
 
@@ -198,12 +226,58 @@ function spawnWorker(): WorkerSlot {
 					if (ev) {
 						const map = revivePostMessage(msg.map as Record<string, unknown>)
 						log?.trace({ eventKeys: Object.keys(map) }, 'worker event received')
+
+						// Sync creds.update back to the parent's auth.creds object.
+						// The worker mutates its own copy; without this the parent's
+						// copy stays stale and saveCreds() writes old data.
+						if (map['creds.update']) {
+							const cfg = slot.configs.get(socketId)
+							if (cfg?.auth?.creds) {
+								Object.assign(cfg.auth.creds, map['creds.update'])
+								log?.debug({ me: (cfg.auth.creds as any).me?.id }, 'synced creds.update to parent')
+							}
+						}
+
 						// Emit the aggregated 'event' for ev.process() compatibility
 						ev.emit('event', map)
 						// Also emit individual typed events for ev.on() listeners
 						for (const [event, data] of Object.entries(map)) {
 							ev.emit(event, data)
 						}
+
+						// When the socket closes, clean up proxy-side resources.
+						// The worker already removed its entry; we remove the
+						// emitter so a future startSock() can create a fresh one.
+						if (map['connection.update']?.connection === 'close') {
+							slot.emitters.delete(socketId)
+							slot.wsEmitters.delete(socketId)
+							slot.props.delete(socketId)
+							slot.callbacks.delete(socketId)
+							slot.keystores.delete(socketId)
+							slot.loggers.delete(socketId)
+							slot.configs.delete(socketId)
+							slot.load = Math.max(0, slot.load - 1)
+							log?.info({ socketId, workerLoad: slot.load }, 'socket closed — proxy cleaned up')
+						}
+					}
+				}
+				break
+
+			case 'ws-event':
+				if (socketId !== undefined) {
+					const wsEv = slot.wsEmitters.get(socketId)
+					if (wsEv) {
+						const { event, args } = msg as { event: string; args: unknown[] }
+						wsEv.emit(event, ...args)
+					}
+				}
+				break
+
+			case 'socket-info':
+				if (socketId !== undefined) {
+					const props = slot.props.get(socketId)
+					if (props && msg.info) {
+						Object.assign(props, msg.info)
 					}
 				}
 				break
@@ -457,9 +531,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const slot = acquireSlot()
 	slot.load++
 	slot.emitters.set(socketId, new EventEmitter())
+	slot.wsEmitters.set(socketId, new EventEmitter())
+	slot.props.set(socketId, {})
 	slot.callbacks.set(socketId, callbackStore)
 	slot.keystores.set(socketId, realKeystore)
 	slot.loggers.set(socketId, log)
+	slot.configs.set(socketId, config)
 
 	log.info(
 		{
@@ -530,13 +607,36 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	}
 
 	// ---- Build the proxy object ------------------------------------------
+	const rawWs = slot.wsEmitters.get(socketId)!
+	const localProps = slot.props.get(socketId)!
+
+	// Wrap ws in a proxy: EventEmitter methods work locally,
+	// close() is forwarded to the worker via RPC.
+	const wsProxy = new Proxy(rawWs, {
+		get(target, prop: string) {
+			if (prop === 'close') {
+				return (...args: unknown[]) => rpcCall('ws.close', args)
+			}
+			// Delegate everything else (on, off, removeAllListeners, etc.) to the EventEmitter
+			const value = (target as any)[prop]
+			if (typeof value === 'function') {
+				return value.bind(target)
+			}
+			return value
+		}
+	})
+
 	const socketProxy = new Proxy(
-		{ ev },
+		{ ev, ws: wsProxy },
 		{
 			get(_target, prop: string) {
 				if (prop === 'ev') return ev
+				if (prop === 'ws') return wsProxy
 				if (prop === 'then') return undefined
 				if (prop === 'pool') return getStats()
+
+				// Check local property store first (wsocket.id, wsocket.user, etc.)
+				if (prop in localProps) return localProps[prop]
 
 				if (prop === 'end') {
 					return async (...args: unknown[]) => {
@@ -556,6 +656,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 				return (...args: unknown[]) => rpcCall(prop, args)
 			},
+
+			set(_target, prop: string, value: unknown) {
+				localProps[prop] = value
+				return true
+			},
 		}
 	) as any
 
@@ -564,6 +669,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 function cleanupSocket(slot: WorkerSlot, socketId: number, log: ILogger): void {
 	slot.emitters.delete(socketId)
+	slot.wsEmitters.delete(socketId)
+	slot.props.delete(socketId)
 	slot.callbacks.delete(socketId)
 	slot.keystores.delete(socketId)
 	slot.loggers.delete(socketId)

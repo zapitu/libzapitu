@@ -189,6 +189,38 @@ function createSocket(socketId: number, rawConfig: any): void {
 
 	log.info('socket created successfully')
 
+	// Send user and authState to the parent when they become available.
+	// These are needed for wsocket.user and wsocket.authState on the proxy side.
+	const sendSocketInfo = () => {
+		try {
+			const info: any = {}
+			if ((sock as any).user) info.user = (sock as any).user
+			if ((sock as any).authState) info.authState = (sock as any).authState
+			if (Object.keys(info).length > 0) {
+				parentPort!.postMessage({ type: 'socket-info', socketId, info })
+			}
+		} catch (_) { /* best-effort */ }
+	}
+
+	// Send immediately (may be empty) and also on connection.open
+	sendSocketInfo()
+	;(sock.ev as any).on('connection.update', (update: any) => {
+		if (update?.connection === 'open') {
+			// Delay slightly so sock.user is populated
+			setTimeout(sendSocketInfo, 100)
+		}
+
+		// When the socket closes, clean up this socket entry so a new
+		// init with a different socketId can reuse this worker.
+		if (update?.connection === 'close') {
+			const entry = sockets.get(socketId)
+			if (entry) {
+				log.info('socket closed — removing from worker')
+				sockets.delete(socketId)
+			}
+		}
+	})
+
 	// Forward ALL events to the parent, tagged with socketId.
 	// Send the aggregated map so the parent can emit both the 'event'
 	// aggregate (for ev.process()) and individual typed events.
@@ -207,6 +239,23 @@ function createSocket(socketId: number, rawConfig: any): void {
 			}
 		}
 	})
+
+	// Forward raw WS events to the parent so ws.on() works on the proxy side.
+	// We forward all events by monkey-patching sock.ws.emit.
+	const ws = (sock as any).ws
+	if (ws) {
+		const origEmit = ws.emit.bind(ws)
+		ws.emit = (event: string, ...args: unknown[]) => {
+			// Forward to parent first (best-effort, non-cloneable data is dropped)
+			try {
+				parentPort!.postMessage({ type: 'ws-event', socketId, event, args })
+			} catch (_) {
+				// silently drop — ws events with non-cloneable data are rare
+			}
+			// Then call the original emit so local listeners still work
+			return origEmit(event, ...args)
+		}
+	}
 
 	sockets.set(socketId, { sock, config, log })
 }

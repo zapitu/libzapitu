@@ -1,21 +1,24 @@
 /**
- * Minimal test for the worker-encapsulated libzapitu.
+ * Worker-encapsulated libzapitu test.
  *
- * Starts a connection, prints the QR code to the terminal,
- * and logs connection state changes.
+ * Scans QR code, connects, sends a message to a target number,
+ * and waits for message ack + replies.
  *
  * Usage:
- *   npx ts-node Example/worker-test.ts
+ *   npx ts-node Example/worker-test.ts <target_number>
+ *
+ *   Example:
+ *   npx ts-node Example/worker-test.ts 5511999999999
  *
  * With pairing code:
- *   npx ts-node Example/worker-test.ts --use-pairing-code
+ *   npx ts-node Example/worker-test.ts 5511999999999 --use-pairing-code
  */
 import makeWASocket, {
 	DisconnectReason,
 	fetchLatestBaileysVersion,
 	makeCacheableSignalKeyStore,
 	useMultiFileAuthState,
-} from '../src/worker'
+} from '../src'
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
 import type { CacheStore } from '../src/Types'
@@ -33,6 +36,17 @@ const logger = P(
 logger.level = 'trace'
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
+const targetNumber = process.argv[2]?.replace(/\D/g, '')
+
+if (!targetNumber) {
+	console.error('Usage: npx ts-node Example/worker-test.ts <target_number>')
+	console.error('Example: npx ts-node Example/worker-test.ts 5511999999999')
+	process.exit(1)
+}
+
+const targetJid = `${targetNumber}@s.whatsapp.net`
+console.log(`🎯 Target: ${targetJid}`)
+
 const msgRetryCounterCache = new NodeCache() as unknown as CacheStore
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -59,7 +73,7 @@ async function startSock() {
 	})
 
 	// ---- Pool stats (worker-specific) ----
-	console.log('worker pool stats:', sock.pool)
+	// console.log('worker pool stats:', sock.pool)
 
 	// ---- Pairing code flow ----
 	if (usePairingCode && !sock.authState.creds.registered) {
@@ -68,52 +82,102 @@ async function startSock() {
 		console.log(`Pairing code: ${code}`)
 	}
 
-	// ---- Event handling ----
-	sock.ev.process(async events => {
-		// Connection state changes
-		if (events['connection.update']) {
-			const update = events['connection.update']
-			const { connection, lastDisconnect, qr } = update
+	// ---- Track sent message for ack correlation ----
+	let sentMsgKey: any = null
+	let connected = false
 
-			// Print QR code to terminal
-			if (qr) {
-				console.log('\n📱 Scan the QR code below:\n')
-				qrcode.generate(qr, { small: true })
+	// ---- Event handling via ev.on() ----
+	sock.ev.on('connection.update', (update: any) => {
+		const { connection, lastDisconnect, qr } = update
+
+		// Print QR code to terminal
+		if (qr) {
+			console.log('\n📱 Scan the QR code below:\n')
+			qrcode.generate(qr, { small: true })
+		}
+
+		if (connection === 'open') {
+			connected = true
+			console.log('✅ Connected successfully!')
+			// sock.pool && console.log('pool stats:', sock.pool)
+
+			// Send message to target after 60s delay
+			console.log('⏳ Waiting 60s before sending message...')
+			setTimeout(() => sendTestMessage(sock), 60_000)
+		}
+
+		if (connection === 'close') {
+			connected = false
+			const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+			const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+
+			console.log(
+				`🔌 Connection closed. Reason: ${statusCode}. Reconnecting: ${shouldReconnect}`
+			)
+
+			if (shouldReconnect) {
+				startSock()
+			} else {
+				console.log('Logged out. Exiting.')
+				process.exit(0)
 			}
+		}
+	})
 
-			if (connection === 'open') {
-				console.log('✅ Connected successfully!')
-				console.log('pool stats:', sock.pool)
+	sock.ev.on('creds.update', async () => {
+		await saveCreds()
+	})
+
+	// ---- Message receipt (ack) ----
+	sock.ev.on('message-receipt.update', (updates: any[]) => {
+		for (const update of updates) {
+			const { key, receipt } = update
+			// Check if this ack is for our sent message
+			if (sentMsgKey && key.id === sentMsgKey.id && key.remoteJid === sentMsgKey.remoteJid) {
+				const statusLabels: Record<string, string> = {
+					server: '📤 Server',
+					delivery: '✅ Delivered',
+					read: '👁️ Read',
+					played: '▶️ Played',
+				}
+				const label = statusLabels[receipt.type] || receipt.type
+				console.log(`${label} ack for message ${key.id}`)
 			}
+		}
+	})
 
-			if (connection === 'close') {
-				const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-				const shouldReconnect = statusCode !== DisconnectReason.loggedOut
-
-				console.log(
-					`🔌 Connection closed. Reason: ${statusCode}. Reconnecting: ${shouldReconnect}`
-				)
-
-				if (shouldReconnect) {
-					startSock()
-				} else {
-					console.log('Logged out. Exiting.')
-					process.exit(0)
+	// ---- Incoming messages (replies) ----
+	sock.ev.on('messages.upsert', ({ messages, type }: any) => {
+		if (type === 'notify') {
+			for (const msg of messages) {
+				// Only log messages from our target
+				const remoteJid = msg.key?.remoteJid
+				if (remoteJid === targetJid && !msg.key?.fromMe) {
+					const text =
+						msg.message?.conversation ||
+						msg.message?.extendedTextMessage?.text ||
+						msg.message?.imageMessage?.caption ||
+						'(media/unknown)'
+					console.log(`💬 Reply from ${remoteJid}: ${text}`)
 				}
 			}
 		}
-
-		// Save credentials
-		if (events['creds.update']) {
-			await saveCreds()
-		}
-
-		// Log received messages (just the count)
-		if (events['messages.upsert']) {
-			const { messages, type } = events['messages.upsert']
-			console.log(`📩 Received ${messages.length} message(s) [type: ${type}]`)
-		}
 	})
+
+	// ---- Send test message ----
+	async function sendTestMessage(sock: any) {
+		try {
+			const messageText = `Hello from libzapitu worker! Sent at ${new Date().toISOString()}`
+			console.log(`\n📨 Sending to ${targetJid}: "${messageText}"`)
+
+			const result = await sock.sendMessage(targetJid, { text: messageText })
+			sentMsgKey = result?.key
+			console.log(`📨 Message sent! ID: ${sentMsgKey?.id}`)
+			console.log('⏳ Waiting for ack and replies... (Ctrl+C to exit)\n')
+		} catch (err: any) {
+			console.error('❌ Failed to send message:', err.message)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
