@@ -33,11 +33,26 @@ const CALLBACK_CONFIG_KEYS = [
 	'shouldIgnoreJid',
 	'patchMessageBeforeSending',
 	'cachedGroupMetadata',
-	'shouldSyncHistoryMessage',
-	'makeSignalRepository',
+	'shouldSyncHistoryMessage'
 ] as const
 
 type CallbackKey = (typeof CALLBACK_CONFIG_KEYS)[number]
+
+/**
+ * Cache stores that live inside the worker thread. They cannot be safely
+ * cloned via postMessage because their methods live on the prototype, so we
+ * replace them with a sentinel and recreate a fresh NodeCache in the worker.
+ */
+const CACHE_CONFIG_KEYS = [
+	'msgRetryCounterCache',
+	'mediaCache',
+	'userDevicesCache',
+	'callOfferCache',
+	'placeholderResendCache'
+] as const
+
+type CacheKey = (typeof CACHE_CONFIG_KEYS)[number]
+const CACHE_SENTINEL = '__worker_cache__'
 
 interface WorkerSlot {
 	worker: Worker
@@ -58,7 +73,7 @@ interface WorkerSlot {
 	/** Per-socket original configs (used to sync creds.update back to parent) */
 	configs: Map<number, UserFacingSocketConfig>
 	/** Pending RPC calls keyed by request id */
-	pending: Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>
+	pending: Map<number, { socketId: number; resolve: (v: any) => void; reject: (e: Error) => void }>
 }
 
 interface PoolStats {
@@ -107,7 +122,7 @@ function createNoopLogger(): ILogger {
 		debug: noop,
 		info: noop,
 		warn: noop,
-		error: noop,
+		error: noop
 	} as unknown as ILogger
 }
 
@@ -164,7 +179,7 @@ function getStats(): PoolStats {
 		size: slots.length,
 		active,
 		idle: slots.length - active,
-		totalSockets: slots.reduce((sum, s) => sum + s.load, 0),
+		totalSockets: slots.reduce((sum, s) => sum + s.load, 0)
 	}
 }
 
@@ -196,7 +211,7 @@ function acquireSlot(): WorkerSlot {
 
 function spawnWorker(): WorkerSlot {
 	const worker = new Worker(workerScript, {
-		execArgv: workerExecArgv ? [...workerExecArgv] : undefined,
+		execArgv: workerExecArgv ? [...workerExecArgv] : undefined
 	})
 
 	const slot: WorkerSlot = {
@@ -209,7 +224,7 @@ function spawnWorker(): WorkerSlot {
 		keystores: new Map(),
 		loggers: new Map(),
 		configs: new Map(),
-		pending: new Map(),
+		pending: new Map()
 	}
 
 	// Global message handler — dispatches to the right socket's emitter
@@ -249,15 +264,7 @@ function spawnWorker(): WorkerSlot {
 						// The worker already removed its entry; we remove the
 						// emitter so a future startSock() can create a fresh one.
 						if (map['connection.update']?.connection === 'close') {
-							slot.emitters.delete(socketId)
-							slot.wsEmitters.delete(socketId)
-							slot.props.delete(socketId)
-							slot.callbacks.delete(socketId)
-							slot.keystores.delete(socketId)
-							slot.loggers.delete(socketId)
-							slot.configs.delete(socketId)
-							slot.load = Math.max(0, slot.load - 1)
-							log?.info({ socketId, workerLoad: slot.load }, 'socket closed — proxy cleaned up')
+							cleanupSocket(slot, socketId, log || createNoopLogger())
 						}
 					}
 				}
@@ -306,7 +313,7 @@ function spawnWorker(): WorkerSlot {
 		}
 	})
 
-	worker.on('error', (err) => {
+	worker.on('error', err => {
 		// Log to all socket loggers on this worker
 		for (const log of slot.loggers.values()) {
 			log.error({ err, workerPid: worker.threadId }, 'worker thread error')
@@ -315,7 +322,7 @@ function spawnWorker(): WorkerSlot {
 		if (idx !== -1) slots.splice(idx, 1)
 	})
 
-	worker.on('exit', (code) => {
+	worker.on('exit', code => {
 		for (const log of slot.loggers.values()) {
 			log.info({ exitCode: code, workerPid: worker.threadId }, 'worker thread exited')
 		}
@@ -345,7 +352,7 @@ async function handleCallbackCall(
 				type: 'callback-result',
 				socketId,
 				id,
-				error: `No keystore method "${method}"`,
+				error: `No keystore method "${method}"`
 			})
 		}
 		try {
@@ -358,7 +365,7 @@ async function handleCallbackCall(
 				type: 'callback-result',
 				socketId,
 				id,
-				error: err?.message || String(err),
+				error: err?.message || String(err)
 			})
 		}
 		return
@@ -374,7 +381,7 @@ async function handleCallbackCall(
 			type: 'callback-result',
 			socketId,
 			id,
-			error: `No callback registered for "${key}"`,
+			error: `No callback registered for "${key}"`
 		})
 	}
 	try {
@@ -387,7 +394,7 @@ async function handleCallbackCall(
 			type: 'callback-result',
 			socketId,
 			id,
-			error: err?.message || String(err),
+			error: err?.message || String(err)
 		})
 	}
 }
@@ -492,9 +499,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const socketId = nextSocketId()
 
 	// ---- Create a child logger for this socket ---------------------------
-	const log: ILogger = config.logger
-		? config.logger.child({ worker: 'proxy', socketId })
-		: createNoopLogger()
+	const log: ILogger = config.logger ? config.logger.child({ worker: 'proxy', socketId }) : createNoopLogger()
 
 	// ---- Extract non-serializable callbacks ------------------------------
 	const callbackStore: Partial<Record<CallbackKey, Function>> = {}
@@ -506,7 +511,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// Functions are replaced with the sentinel string '__proxy_fn__'.
 	// The child will create forwarding stubs for known callback keys and
 	// the keystore; other stripped functions become no-ops.
-	const serializableConfig: any = deepStripFunctions(config)
+	//
+	// makeSignalRepository returns a complex object (closures + methods) that
+	// cannot be cloned back to the worker. We replace it with a sentinel and
+	// recreate the default libsignal repository inside the worker.
+	const configWithSignalRepo =
+		typeof (config as any).makeSignalRepository === 'function'
+			? { ...config, makeSignalRepository: '__worker_signal_repository__' as const }
+			: config
+	const serializableConfig: any = deepStripFunctions(configWithSignalRepo)
 
 	// Mark the logger so the child knows to create a real one
 	if (config.logger) {
@@ -517,6 +530,24 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	if (realKeystore) {
 		if (!serializableConfig.auth) serializableConfig.auth = {}
 		serializableConfig.auth.keys = '__proxy_keystore__'
+	}
+
+	// Worker-local cache stores cannot be cloned (their methods live on the
+	// prototype and would become broken plain objects). Replace them with a
+	// sentinel so the child creates a fresh cache inside the worker.
+	for (const k of CACHE_CONFIG_KEYS) {
+		if (typeof (config as any)[k]?.get === 'function') {
+			;(serializableConfig as any)[k] = CACHE_SENTINEL
+		}
+	}
+
+	// HTTP agents contain sockets and native state; they cannot cross
+	// postMessage. The worker will create its own agents.
+	if (serializableConfig.agent) {
+		serializableConfig.agent = undefined
+	}
+	if (serializableConfig.fetchAgent) {
+		serializableConfig.fetchAgent = undefined
 	}
 
 	// Restore known callback sentinels with the proper key names
@@ -543,7 +574,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			workerPid: slot.worker.threadId,
 			workerLoad: slot.load,
 			poolSize: slots.length,
-			maxWorkers,
+			maxWorkers
 		},
 		'socket assigned to worker'
 	)
@@ -552,7 +583,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	slot.worker.postMessage({
 		type: 'init',
 		socketId,
-		config: serializableConfig,
+		config: serializableConfig
 	})
 
 	log.debug('init message sent to worker')
@@ -568,13 +599,23 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const ev = new Proxy(rawEv, {
 		get(target, prop: string) {
 			// Local EventEmitter methods
-			if (prop === 'on' || prop === 'off' || prop === 'emit' ||
-				prop === 'removeListener' || prop === 'addListener' ||
-				prop === 'removeAllListeners' || prop === 'listeners' ||
-				prop === 'listenerCount' || prop === 'eventNames' ||
-				prop === 'getMaxListeners' || prop === 'setMaxListeners' ||
-				prop === 'rawListeners' || prop === 'prependListener' ||
-				prop === 'prependOnceListener' || prop === 'once') {
+			if (
+				prop === 'on' ||
+				prop === 'off' ||
+				prop === 'emit' ||
+				prop === 'removeListener' ||
+				prop === 'addListener' ||
+				prop === 'removeAllListeners' ||
+				prop === 'listeners' ||
+				prop === 'listenerCount' ||
+				prop === 'eventNames' ||
+				prop === 'getMaxListeners' ||
+				prop === 'setMaxListeners' ||
+				prop === 'rawListeners' ||
+				prop === 'prependListener' ||
+				prop === 'prependOnceListener' ||
+				prop === 'once'
+			) {
 				return (target as any)[prop].bind(target)
 			}
 
@@ -601,7 +642,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		const id = nextReqId()
 		log.trace({ rpcId: id, method, argCount: args.length }, 'RPC call → worker')
 		return new Promise((resolve, reject) => {
-			slot.pending.set(id, { resolve, reject })
+			slot.pending.set(id, { socketId, resolve, reject })
 			slot.worker.postMessage({ type: 'call', socketId, id, method, args })
 		})
 	}
@@ -615,7 +656,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const wsProxy = new Proxy(rawWs, {
 		get(target, prop: string) {
 			if (prop === 'close') {
-				return (...args: unknown[]) => rpcCall('ws.close', args)
+				return (...args: unknown[]) => {
+					if (!isSocketActive(slot, socketId)) {
+						log.debug('ws.close() ignored — socket already cleaned up')
+						return Promise.resolve()
+					}
+					return rpcCall('ws.close', args)
+				}
 			}
 			// Delegate everything else (on, off, removeAllListeners, etc.) to the EventEmitter
 			const value = (target as any)[prop]
@@ -640,16 +687,32 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 				if (prop === 'end') {
 					return async (...args: unknown[]) => {
+						if (!isSocketActive(slot, socketId)) {
+							log.debug('socket.end() ignored — already cleaned up')
+							return
+						}
 						log.info('socket.end() called — cleaning up')
-						try { await rpcCall('end', args) } catch (_) { /* ok */ }
+						try {
+							await rpcCall('end', args)
+						} catch (_) {
+							/* ok */
+						}
 						cleanupSocket(slot, socketId, log)
 					}
 				}
 
 				if (prop === 'logout') {
 					return async (...args: unknown[]) => {
+						if (!isSocketActive(slot, socketId)) {
+							log.debug('socket.logout() ignored — already cleaned up')
+							return
+						}
 						log.info('socket.logout() called — cleaning up')
-						try { await rpcCall('logout', args) } catch (_) { /* ok */ }
+						try {
+							await rpcCall('logout', args)
+						} catch (_) {
+							/* ok */
+						}
 						cleanupSocket(slot, socketId, log)
 					}
 				}
@@ -660,23 +723,43 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			set(_target, prop: string, value: unknown) {
 				localProps[prop] = value
 				return true
-			},
+			}
 		}
 	) as any
 
 	return socketProxy
 }
 
-function cleanupSocket(slot: WorkerSlot, socketId: number, log: ILogger): void {
+function isSocketActive(slot: WorkerSlot, socketId: number): boolean {
+	return slot.emitters.has(socketId)
+}
+
+function cleanupSocket(slot: WorkerSlot, socketId: number, log: ILogger): boolean {
+	// Idempotent cleanup: only run once per socketId.
+	if (!isSocketActive(slot, socketId)) {
+		return false
+	}
+
+	// Reject any pending RPC calls for this socket so they don't hang or
+	// receive the worker's "Socket X not found" error after reconnection.
+	for (const [id, p] of slot.pending) {
+		if (p.socketId === socketId) {
+			slot.pending.delete(id)
+			p.reject(new Error(`Socket ${socketId} closed`))
+		}
+	}
+
 	slot.emitters.delete(socketId)
 	slot.wsEmitters.delete(socketId)
 	slot.props.delete(socketId)
 	slot.callbacks.delete(socketId)
 	slot.keystores.delete(socketId)
 	slot.loggers.delete(socketId)
+	slot.configs.delete(socketId)
 	slot.load = Math.max(0, slot.load - 1)
 
 	log.info({ workerLoad: slot.load, poolSize: slots.length }, 'socket cleaned up')
+	return true
 
 	// If the worker is now idle and we're over capacity, terminate it
 	if (slot.load === 0 && slots.length > maxWorkers) {

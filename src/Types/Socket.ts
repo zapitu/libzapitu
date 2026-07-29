@@ -64,7 +64,7 @@ export type SocketConfig = {
 	/** provide an auth state object to maintain the auth state */
 	auth: AuthenticationState
 	/** manage history processing with this control; by default will sync up everything */
-	shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => boolean
+	shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => boolean | Promise<boolean>
 	/** transaction capability options for SignalKeyStore */
 	transactionOpts: TransactionCapabilityOptions
 	/** marks the client as online whenever the socket successfully connects */
@@ -98,9 +98,10 @@ export type SocketConfig = {
 	/**
 	 * Returns if a jid should be ignored,
 	 * no event for that jid will be triggered.
-	 * Messages from that jid will also not be decrypted
+	 * Messages from that jid will also not be decrypted.
+	 * May return a boolean or a Promise resolving to a boolean.
 	 * */
-	shouldIgnoreJid: (jid: string) => boolean | undefined
+	shouldIgnoreJid: (jid: string) => boolean | undefined | Promise<boolean | undefined>
 
 	/**
 	 * Optionally patch the message before sending out

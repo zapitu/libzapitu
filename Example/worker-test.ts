@@ -17,8 +17,8 @@ import makeWASocket, {
 	DisconnectReason,
 	fetchLatestBaileysVersion,
 	makeCacheableSignalKeyStore,
-	useMultiFileAuthState,
-} from '../src'
+	useMultiFileAuthState
+} from '../src/worker'
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
 import type { CacheStore } from '../src/Types'
@@ -29,10 +29,7 @@ import qrcode from 'qrcode-terminal'
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
-const logger = P(
-	{ timestamp: () => `,"time":"${new Date().toJSON()}"` },
-	P.destination('./wa-worker-logs.txt')
-)
+const logger = P({ timestamp: () => `,"time":"${new Date().toJSON()}"` }, P.destination('./wa-worker-logs.txt'))
 logger.level = 'trace'
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
@@ -66,10 +63,10 @@ async function startSock() {
 		logger,
 		auth: {
 			creds: state.creds,
-			keys: makeCacheableSignalKeyStore(state.keys, logger),
+			keys: makeCacheableSignalKeyStore(state.keys, logger)
 		},
 		msgRetryCounterCache,
-		generateHighQualityLinkPreview: false,
+		generateHighQualityLinkPreview: false
 	})
 
 	// ---- Pool stats (worker-specific) ----
@@ -111,9 +108,7 @@ async function startSock() {
 			const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
 			const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-			console.log(
-				`🔌 Connection closed. Reason: ${statusCode}. Reconnecting: ${shouldReconnect}`
-			)
+			console.log(`🔌 Connection closed. Reason: ${statusCode}. Reconnecting: ${shouldReconnect}`)
 
 			if (shouldReconnect) {
 				startSock()
@@ -138,7 +133,7 @@ async function startSock() {
 					server: '📤 Server',
 					delivery: '✅ Delivered',
 					read: '👁️ Read',
-					played: '▶️ Played',
+					played: '▶️ Played'
 				}
 				const label = statusLabels[receipt.type] || receipt.type
 				console.log(`${label} ack for message ${key.id}`)

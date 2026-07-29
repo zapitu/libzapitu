@@ -7,11 +7,12 @@
  * by a unique `socketId` sent in the `init` message from the parent.
  */
 import { isMainThread, parentPort } from 'worker_threads'
+import NodeCache from '@cacheable/node-cache'
 import makeWASocket from '../Socket'
+import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { UserFacingSocketConfig } from '../Types'
 import type { BaileysEventMap } from '../Types/Events'
-import type { ILogger } from '../Utils/logger'
-import P from 'pino'
+import defaultLogger, { type ILogger } from '../Utils/logger'
 
 // ---------------------------------------------------------------------------
 // Ensure we never run this in the main thread
@@ -28,8 +29,7 @@ const CALLBACK_PROXIED_KEYS = [
 	'shouldIgnoreJid',
 	'patchMessageBeforeSending',
 	'cachedGroupMetadata',
-	'shouldSyncHistoryMessage',
-	'makeSignalRepository',
+	'shouldSyncHistoryMessage'
 ] as const
 
 type ProxiedCallbackKey = (typeof CALLBACK_PROXIED_KEYS)[number]
@@ -55,19 +55,14 @@ function createNoopLogger(): ILogger {
 		debug: noop,
 		info: noop,
 		warn: noop,
-		error: noop,
+		error: noop
 	} as unknown as ILogger
 }
 
 // ---------------------------------------------------------------------------
 // Callback proxy helper
 // ---------------------------------------------------------------------------
-function proxyCallback(
-	socketId: number,
-	key: ProxiedCallbackKey,
-	log: ILogger,
-	...args: unknown[]
-): Promise<unknown> {
+function proxyCallback(socketId: number, key: ProxiedCallbackKey, log: ILogger, ...args: unknown[]): Promise<unknown> {
 	const id = nextReqId()
 	log.trace({ callbackKey: key, rpcId: id }, 'callback → parent')
 	return new Promise((resolve, reject) => {
@@ -156,11 +151,10 @@ function createSocket(socketId: number, rawConfig: any): void {
 
 	// The proxy replaces the logger with a sentinel string because functions
 	// can't be serialized across postMessage. Create a real logger here.
-	// Use a basic pino logger so the real makeWASocket has a working logger.
+	// Use the default logger (level controlled by BAILEYS_LOG_LEVEL) so the
+	// real makeWASocket has a working logger.
 	const hasLogger = (config as any).logger === '__proxy_logger__'
-	const realLogger: ILogger = hasLogger
-		? P({ timestamp: () => `,"time":"${new Date().toJSON()}"` }).child({ worker: 'child', socketId })
-		: createNoopLogger()
+	const realLogger: ILogger = hasLogger ? defaultLogger.child({ worker: 'child', socketId }) : createNoopLogger()
 	;(config as any).logger = realLogger
 
 	// Create a child logger for our own worker-level logging
@@ -175,6 +169,13 @@ function createSocket(socketId: number, rawConfig: any): void {
 		}
 	}
 
+	// Recreate the signal repository inside the worker. The repository object
+	// contains closures and methods that cannot cross postMessage, so the parent
+	// sends a sentinel instead of proxying the factory.
+	if ((config as any).makeSignalRepository === '__worker_signal_repository__') {
+		;(config as any).makeSignalRepository = makeLibSignalRepository
+	}
+
 	// Replace sentinel keystore with forwarding stubs
 	if ((config as any).auth?.keys === '__proxy_keystore__') {
 		const keystoreMethods = ['get', 'set', 'clear', 'isInTransaction', 'transaction']
@@ -183,6 +184,21 @@ function createSocket(socketId: number, rawConfig: any): void {
 			stub[method] = (...args: unknown[]) => proxyCallback(socketId, `keystore.${method}` as any, log, ...args)
 		}
 		;(config as any).auth.keys = stub
+	}
+
+	// Replace worker-local cache sentinels with real cache instances.
+	// The parent's cache cannot be cloned (methods live on prototype).
+	const cacheKeys = [
+		'msgRetryCounterCache',
+		'mediaCache',
+		'userDevicesCache',
+		'callOfferCache',
+		'placeholderResendCache'
+	]
+	for (const k of cacheKeys) {
+		if ((config as any)[k] === '__worker_cache__') {
+			;(config as any)[k] = new NodeCache({ useClones: false })
+		}
 	}
 
 	const sock = makeWASocket(config)
@@ -199,7 +215,9 @@ function createSocket(socketId: number, rawConfig: any): void {
 			if (Object.keys(info).length > 0) {
 				parentPort!.postMessage({ type: 'socket-info', socketId, info })
 			}
-		} catch (_) { /* best-effort */ }
+		} catch (_) {
+			/* best-effort */
+		}
 	}
 
 	// Send immediately (may be empty) and also on connection.open
@@ -287,7 +305,7 @@ parentPort.on('message', async (msg: any) => {
 					type: 'result',
 					socketId,
 					id,
-					error: `Socket ${socketId} not found`,
+					error: `Socket ${socketId} not found`
 				})
 				return
 			}
@@ -320,7 +338,7 @@ parentPort.on('message', async (msg: any) => {
 					type: 'result',
 					socketId,
 					id,
-					error: err?.message || String(err),
+					error: err?.message || String(err)
 				})
 			}
 			break

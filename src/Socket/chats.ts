@@ -761,7 +761,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	/** sending non-abt props may fix QR scan fail if server expects */
-		const fetchProps = async () => {
+	const fetchProps = async () => {
 		const resultNode = await query({
 			tag: 'iq',
 			attrs: {
@@ -797,7 +797,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		return props
 	}
-
 
 	/**
 	 * modify a chat -- mark unread, read etc.
@@ -947,7 +946,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		const historyMsg = getHistoryMsg(msg.message!)
 		const shouldProcessHistoryMsg = historyMsg
-			? shouldSyncHistoryMessage(historyMsg) && PROCESSABLE_HISTORY_TYPES.includes(historyMsg.syncType!)
+			? (await shouldSyncHistoryMessage(historyMsg)) && PROCESSABLE_HISTORY_TYPES.includes(historyMsg.syncType!)
 			: false
 
 		if (historyMsg && !authState.creds.myAppStateKeyId) {
