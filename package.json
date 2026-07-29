@@ -83,6 +83,7 @@
     "jimp": "^1.6.0",
     "json": "^11.0.0",
     "link-preview-js": "^3.0.0",
+    "node-cache": "^5.1.2",
     "open": "^8.4.2",
     "prettier": "^3.5.3",
     "protobufjs-cli": "^1.1.3",

@@ -1,17 +1,19 @@
 import { Boom } from '@hapi/boom'
-import NodeCache from '@cacheable/node-cache'
+import NodeCache from 'node-cache'
 import readline from 'readline'
-import makeWASocket, { AnyMessageContent, BinaryInfo, delay, DisconnectReason, downloadAndProcessHistorySyncNotification, encodeWAM, fetchLatestBaileysVersion, getAggregateVotesInPollMessage, getHistoryMsg, isJidNewsletter, makeCacheableSignalKeyStore, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
+import makeWASocketDirect, { AnyMessageContent, BinaryInfo, delay, DisconnectReason, downloadAndProcessHistorySyncNotification, encodeWAM, fetchLatestBaileysVersion, getAggregateVotesInPollMessage, getHistoryMsg, isJidNewsletter, makeCacheableSignalKeyStore, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
 //import MAIN_LOGGER from '../src/Utils/logger'
 import open from 'open'
 import fs from 'fs'
 import P from 'pino'
+import qrcode from 'qrcode-terminal'
 
 const logger = P({ timestamp: () => `,"time":"${new Date().toJSON()}"` }, P.destination('./wa-logs.txt'))
 logger.level = 'trace'
 
 const doReplies = process.argv.includes('--do-reply')
 const usePairingCode = process.argv.includes('--use-pairing-code')
+const useWorker = process.argv.includes('--worker')
 
 // external map to store retry counts of messages when decryption/encryption fails
 // keep this out of the socket itself, so as to prevent a message decryption/encryption loop across socket restarts
@@ -23,6 +25,15 @@ const onDemandMap = new Map<string, string>()
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 const question = (text: string) => new Promise<string>((resolve) => rl.question(text, resolve))
 
+/**
+ * Socket type that may include worker-mode pool stats.
+ * When --worker is passed, sock.pool is { size, active, idle, totalSockets }.
+ * When running directly, sock.pool is undefined.
+ */
+interface WorkerSocket extends ReturnType<typeof makeWASocketDirect> {
+	readonly pool?: { readonly size: number; readonly active: number; readonly idle: number; readonly totalSockets: number }
+}
+
 // start a connection
 const startSock = async() => {
 	const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
@@ -30,23 +41,43 @@ const startSock = async() => {
 	const { version, isLatest } = await fetchLatestBaileysVersion()
 	console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
-	const sock = makeWASocket({
-		version,
-		logger,
-		printQRInTerminal: !usePairingCode,
-		auth: {
-			creds: state.creds,
-			/** caching makes the store faster to send/recv messages */
-			keys: makeCacheableSignalKeyStore(state.keys, logger),
-		},
-		msgRetryCounterCache,
-		generateHighQualityLinkPreview: true,
-		// ignore all broadcast messages -- to receive the same
-		// comment the line below out
-		// shouldIgnoreJid: jid => isJidBroadcast(jid),
-		// implement to handle retries & poll updates
-		getMessage,
-	})
+	let sock: WorkerSocket
+
+	if (useWorker) {
+		// Dynamic import — worker mode
+		const { default: makeWASocketWorker } = await import('../src/worker')
+		sock = makeWASocketWorker({
+			version,
+			logger,
+			auth: {
+				creds: state.creds,
+				keys: makeCacheableSignalKeyStore(state.keys, logger),
+			},
+			msgRetryCounterCache,
+			generateHighQualityLinkPreview: true,
+			getMessage,
+		}) as WorkerSocket
+
+		console.log('🧵 Worker mode — pool stats:', sock.pool)
+	} else {
+		sock = makeWASocketDirect({
+			version,
+			logger,
+			printQRInTerminal: !usePairingCode,
+			auth: {
+				creds: state.creds,
+				/** caching makes the store faster to send/recv messages */
+				keys: makeCacheableSignalKeyStore(state.keys, logger),
+			},
+			msgRetryCounterCache,
+			generateHighQualityLinkPreview: true,
+			// ignore all broadcast messages -- to receive the same
+			// comment the line below out
+			// shouldIgnoreJid: jid => isJidBroadcast(jid),
+			// implement to handle retries & poll updates
+			getMessage,
+		})
+	}
 
 	// Pairing code for Web clients
 	if (usePairingCode && !sock.authState.creds.registered) {
@@ -77,11 +108,19 @@ const startSock = async() => {
 			// maybe it closed, or we received all offline message or connection opened
 			if(events['connection.update']) {
 				const update = events['connection.update']
-				const { connection, lastDisconnect } = update
+				const { connection, lastDisconnect, qr } = update
+
+				// Print QR code to terminal
+				if (qr) {
+					console.log('\n📱 Scan the QR code below:\n')
+					qrcode.generate(qr, { small: true })
+				}
+
 				if(connection === 'close') {
 					// reconnect if not logged out
 					if((lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut) {
-						startSock()
+						console.log('🔄 Reconnecting in 2s...')
+						setTimeout(() => startSock(), 2000)
 					} else {
 						console.log('Connection closed. You are logged out.')
 					}
@@ -95,7 +134,7 @@ const startSock = async() => {
 				// THE FIRST EVENT CONTAINS THE CONSTANT GLOBALS, EXCEPT THE seqenceNumber(in the event) and commitTime
 				// THIS INCLUDES STUFF LIKE ocVersion WHICH IS CRUCIAL FOR THE PREVENTION OF THE WARNING
 				const sendWAMExample = false;
-				if(connection === 'open' && sendWAMExample) {
+				if(connection === 'open' && sendWAMExample && !useWorker) {
 					/// sending WAM EXAMPLE
 					const {
 						header: {
@@ -113,14 +152,14 @@ const startSock = async() => {
 
 					const buffer = encodeWAM(binaryInfo);
 
-					const result = await sock.sendWAMBuffer(buffer)
+					const result = await (sock as ReturnType<typeof makeWASocketDirect>).sendWAMBuffer(buffer)
 					console.log(result)
 				}
 
 				console.log('connection update', update)
 			}
 
-			// credentials updated -- save them
+			// credentials updated — save them
 			if(events['creds.update']) {
 				await saveCreds()
 			}
