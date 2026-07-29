@@ -11,6 +11,7 @@ import makeWASocket from '../Socket'
 import type { UserFacingSocketConfig } from '../Types'
 import type { BaileysEventMap } from '../Types/Events'
 import type { ILogger } from '../Utils/logger'
+import P from 'pino'
 
 // ---------------------------------------------------------------------------
 // Ensure we never run this in the main thread
@@ -90,13 +91,80 @@ function proxyCallback(
 // ---------------------------------------------------------------------------
 // Create a socket for a given socketId
 // ---------------------------------------------------------------------------
-function createSocket(socketId: number, rawConfig: any): void {
-	const config: UserFacingSocketConfig = rawConfig
 
-	// Create a child logger for this socket on the worker side
-	const log: ILogger = config.logger
-		? config.logger.child({ worker: 'child', socketId })
+/**
+ * Recursively clone a value, replacing non-cloneable types (Error, Function)
+ * with plain serializable representations.
+ */
+function sanitizeForPostMessage(value: unknown, seen = new WeakSet()): any {
+	if (value instanceof Error) {
+		return { __error__: true, message: value.message, name: value.name, stack: value.stack }
+	}
+	if (typeof value === 'function') {
+		return '__fn__'
+	}
+	if (value !== null && typeof value === 'object') {
+		if (seen.has(value as object)) return '[Circular]'
+		seen.add(value as object)
+		if (Array.isArray(value)) {
+			return value.map(v => sanitizeForPostMessage(v, seen))
+		}
+		// Preserve binary/typed-array types — structured clone handles them natively
+		if (
+			Buffer.isBuffer(value) ||
+			value instanceof Uint8Array ||
+			value instanceof ArrayBuffer ||
+			ArrayBuffer.isView(value)
+		) {
+			return value
+		}
+		const result: any = {}
+		for (const key of Object.keys(value as object)) {
+			result[key] = sanitizeForPostMessage((value as any)[key], seen)
+		}
+		return result
+	}
+	return value
+}
+
+/**
+ * Recursively convert Uint8Array values to Buffer.
+ * After structured clone via postMessage, Uint8Arrays survive as Uint8Array,
+ * but libsignal and other libraries expect Buffer instances.
+ */
+function reviveBuffers(value: unknown, seen = new WeakSet()): any {
+	if (value instanceof Uint8Array && !Buffer.isBuffer(value)) {
+		return Buffer.from(value)
+	}
+	if (value !== null && typeof value === 'object') {
+		if (seen.has(value as object)) return value
+		seen.add(value as object)
+		if (Array.isArray(value)) {
+			return value.map(v => reviveBuffers(v, seen))
+		}
+		const result: any = {}
+		for (const key of Object.keys(value as object)) {
+			result[key] = reviveBuffers((value as any)[key], seen)
+		}
+		return result
+	}
+	return value
+}
+
+function createSocket(socketId: number, rawConfig: any): void {
+	const config: UserFacingSocketConfig = reviveBuffers(rawConfig)
+
+	// The proxy replaces the logger with a sentinel string because functions
+	// can't be serialized across postMessage. Create a real logger here.
+	// Use a basic pino logger so the real makeWASocket has a working logger.
+	const hasLogger = (config as any).logger === '__proxy_logger__'
+	const realLogger: ILogger = hasLogger
+		? P({ timestamp: () => `,"time":"${new Date().toJSON()}"` }).child({ worker: 'child', socketId })
 		: createNoopLogger()
+	;(config as any).logger = realLogger
+
+	// Create a child logger for our own worker-level logging
+	const log: ILogger = realLogger.child({ component: 'worker-bridge' })
 
 	log.info('creating socket in worker')
 
@@ -107,15 +175,36 @@ function createSocket(socketId: number, rawConfig: any): void {
 		}
 	}
 
+	// Replace sentinel keystore with forwarding stubs
+	if ((config as any).auth?.keys === '__proxy_keystore__') {
+		const keystoreMethods = ['get', 'set', 'clear', 'isInTransaction', 'transaction']
+		const stub: any = {}
+		for (const method of keystoreMethods) {
+			stub[method] = (...args: unknown[]) => proxyCallback(socketId, `keystore.${method}` as any, log, ...args)
+		}
+		;(config as any).auth.keys = stub
+	}
+
 	const sock = makeWASocket(config)
 
 	log.info('socket created successfully')
 
-	// Forward ALL events to the parent, tagged with socketId
+	// Forward ALL events to the parent, tagged with socketId.
+	// Send the aggregated map so the parent can emit both the 'event'
+	// aggregate (for ev.process()) and individual typed events.
 	;(sock.ev as any).on('event', (map: Partial<BaileysEventMap>) => {
-		for (const [event, data] of Object.entries(map)) {
-			log.trace({ event, dataKeys: data ? Object.keys(data) : [] }, 'event → parent')
-			parentPort!.postMessage({ type: 'event', socketId, event, data })
+		log.trace({ eventKeys: Object.keys(map) }, 'event → parent')
+		try {
+			parentPort!.postMessage({ type: 'event', socketId, map })
+		} catch (err: any) {
+			log.error({ err, eventKeys: Object.keys(map) }, 'failed to send event to parent (non-cloneable data)')
+			// Attempt to send a sanitized version without Error objects
+			try {
+				const sanitized = sanitizeForPostMessage(map)
+				parentPort!.postMessage({ type: 'event', socketId, map: sanitized })
+			} catch (_) {
+				log.error({ eventKeys: Object.keys(map) }, 'event dropped — could not sanitize')
+			}
 		}
 	})
 

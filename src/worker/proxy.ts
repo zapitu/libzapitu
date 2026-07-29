@@ -20,6 +20,7 @@
 import { Worker } from 'worker_threads'
 import { EventEmitter } from 'events'
 import { cpus } from 'os'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import type { UserFacingSocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
@@ -46,6 +47,8 @@ interface WorkerSlot {
 	emitters: Map<number, EventEmitter>
 	/** Per-socket callback stores */
 	callbacks: Map<number, Partial<Record<CallbackKey, Function>>>
+	/** Per-socket real auth.keys (SignalKeyStore) — proxied separately */
+	keystores: Map<number, any>
 	/** Per-socket loggers (child loggers from the user's config) */
 	loggers: Map<number, ILogger>
 	/** Pending RPC calls keyed by request id */
@@ -71,7 +74,16 @@ const nextReqId = (): number => ++_reqId
 let _socketId = 0
 const nextSocketId = (): number => ++_socketId
 
-const workerScript = join(__dirname, 'child.js')
+// Resolve the worker script path. When running via ts-node, __dirname
+// points to src/worker/ and we need to spawn the .ts file with ts-node.
+// In production (compiled JS), __dirname points to lib/worker/ and we
+// use the .js file directly.
+const _childJsPath = join(__dirname, 'child.js')
+const _childTsPath = join(__dirname, 'child.ts')
+const _isTsNode = existsSync(_childTsPath) && !existsSync(_childJsPath)
+
+const workerScript = _isTsNode ? _childTsPath : _childJsPath
+const workerExecArgv = _isTsNode ? ['-r', 'ts-node/register'] : undefined
 
 /** Active worker slots */
 const slots: WorkerSlot[] = []
@@ -91,6 +103,30 @@ function createNoopLogger(): ILogger {
 		warn: noop,
 		error: noop,
 	} as unknown as ILogger
+}
+
+/**
+ * Recursively revive objects that were sanitized by the child's
+ * sanitizeForPostMessage (e.g. Error sentinels).
+ */
+function revivePostMessage(value: unknown): any {
+	if (value !== null && typeof value === 'object') {
+		if ((value as any).__error__) {
+			const err = new Error((value as any).message)
+			err.name = (value as any).name
+			err.stack = (value as any).stack
+			return err
+		}
+		if (Array.isArray(value)) {
+			return value.map(revivePostMessage)
+		}
+		const result: any = {}
+		for (const key of Object.keys(value as object)) {
+			result[key] = revivePostMessage((value as any)[key])
+		}
+		return result
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------
@@ -134,13 +170,16 @@ function acquireSlot(): WorkerSlot {
 }
 
 function spawnWorker(): WorkerSlot {
-	const worker = new Worker(workerScript)
+	const worker = new Worker(workerScript, {
+		execArgv: workerExecArgv ? [...workerExecArgv] : undefined,
+	})
 
 	const slot: WorkerSlot = {
 		worker,
 		load: 0,
 		emitters: new Map(),
 		callbacks: new Map(),
+		keystores: new Map(),
 		loggers: new Map(),
 		pending: new Map(),
 	}
@@ -157,8 +196,14 @@ function spawnWorker(): WorkerSlot {
 				if (socketId !== undefined) {
 					const ev = slot.emitters.get(socketId)
 					if (ev) {
-						log?.trace({ event: msg.event, dataKeys: msg.data ? Object.keys(msg.data) : [] }, 'worker event received')
-						ev.emit(msg.event, msg.data)
+						const map = revivePostMessage(msg.map as Record<string, unknown>)
+						log?.trace({ eventKeys: Object.keys(map) }, 'worker event received')
+						// Emit the aggregated 'event' for ev.process() compatibility
+						ev.emit('event', map)
+						// Also emit individual typed events for ev.on() listeners
+						for (const [event, data] of Object.entries(map)) {
+							ev.emit(event, data)
+						}
 					}
 				}
 				break
@@ -211,12 +256,43 @@ function spawnWorker(): WorkerSlot {
 async function handleCallbackCall(
 	slot: WorkerSlot,
 	socketId: number,
-	msg: { id: number; key: CallbackKey; args: unknown[] }
+	msg: { id: number; key: string; args: unknown[] }
 ) {
 	const { id, key, args } = msg
-	const store = slot.callbacks.get(socketId)
-	const fn = store?.[key]
 	const log = slot.loggers.get(socketId)
+
+	// Handle keystore operations (auth.keys.get / auth.keys.set)
+	if (key.startsWith('keystore.')) {
+		const method = key.slice('keystore.'.length)
+		const keystore = slot.keystores.get(socketId)
+		if (!keystore || typeof keystore[method] !== 'function') {
+			log?.error({ keystoreMethod: method }, 'no keystore method registered')
+			return slot.worker.postMessage({
+				type: 'callback-result',
+				socketId,
+				id,
+				error: `No keystore method "${method}"`,
+			})
+		}
+		try {
+			log?.debug({ keystoreMethod: method, argCount: args.length }, 'invoking keystore method')
+			const result = await keystore[method](...args)
+			slot.worker.postMessage({ type: 'callback-result', socketId, id, result })
+		} catch (err: any) {
+			log?.error({ err, keystoreMethod: method }, 'keystore method threw error')
+			slot.worker.postMessage({
+				type: 'callback-result',
+				socketId,
+				id,
+				error: err?.message || String(err),
+			})
+		}
+		return
+	}
+
+	// Handle regular config callbacks
+	const store = slot.callbacks.get(socketId)
+	const fn = store?.[key as CallbackKey]
 
 	if (!fn) {
 		log?.error({ callbackKey: key }, 'no callback registered for key')
@@ -302,6 +378,42 @@ async function drainPool(): Promise<void> {
 // ---------------------------------------------------------------------------
 // makeWASocket (pool-aware proxy)
 // ---------------------------------------------------------------------------
+
+/**
+ * Recursively clone a value, replacing all functions with the sentinel
+ * string '__proxy_fn__'. This ensures the config can be sent via
+ * postMessage (structured clone).
+ */
+function deepStripFunctions(value: unknown, seen = new WeakSet()): any {
+	if (typeof value === 'function') {
+		return '__proxy_fn__'
+	}
+	if (value !== null && typeof value === 'object') {
+		if (seen.has(value as object)) return '[Circular]'
+		seen.add(value as object)
+
+		// Preserve binary/typed-array types — structured clone handles them natively
+		if (
+			Buffer.isBuffer(value) ||
+			value instanceof Uint8Array ||
+			value instanceof ArrayBuffer ||
+			ArrayBuffer.isView(value)
+		) {
+			return value
+		}
+
+		if (Array.isArray(value)) {
+			return value.map(v => deepStripFunctions(v, seen))
+		}
+		const result: any = {}
+		for (const key of Object.keys(value as object)) {
+			result[key] = deepStripFunctions((value as any)[key], seen)
+		}
+		return result
+	}
+	return value
+}
+
 const makeWASocket = (config: UserFacingSocketConfig) => {
 	const socketId = nextSocketId()
 
@@ -312,11 +424,31 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	// ---- Extract non-serializable callbacks ------------------------------
 	const callbackStore: Partial<Record<CallbackKey, Function>> = {}
-	const serializableConfig: any = { ...config }
 
+	// Save the real keystore before stripping
+	const realKeystore = (config as any).auth?.keys
+
+	// Deep-strip all functions from the config so it can be sent via postMessage.
+	// Functions are replaced with the sentinel string '__proxy_fn__'.
+	// The child will create forwarding stubs for known callback keys and
+	// the keystore; other stripped functions become no-ops.
+	const serializableConfig: any = deepStripFunctions(config)
+
+	// Mark the logger so the child knows to create a real one
+	if (config.logger) {
+		;(serializableConfig as any).logger = '__proxy_logger__'
+	}
+
+	// Mark the keystore so the child creates forwarding stubs
+	if (realKeystore) {
+		if (!serializableConfig.auth) serializableConfig.auth = {}
+		serializableConfig.auth.keys = '__proxy_keystore__'
+	}
+
+	// Restore known callback sentinels with the proper key names
 	for (const k of CALLBACK_CONFIG_KEYS) {
-		if (typeof (serializableConfig as any)[k] === 'function') {
-			callbackStore[k as CallbackKey] = (serializableConfig as any)[k]
+		if (typeof (config as any)[k] === 'function') {
+			callbackStore[k as CallbackKey] = (config as any)[k]
 			;(serializableConfig as any)[k] = '__proxy_callback__'
 		}
 	}
@@ -326,6 +458,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	slot.load++
 	slot.emitters.set(socketId, new EventEmitter())
 	slot.callbacks.set(socketId, callbackStore)
+	slot.keystores.set(socketId, realKeystore)
 	slot.loggers.set(socketId, log)
 
 	log.info(
@@ -348,7 +481,43 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	log.debug('init message sent to worker')
 
 	// ---- Public event emitter (local to this socket) ---------------------
-	const ev = slot.emitters.get(socketId)!
+	const rawEv = slot.emitters.get(socketId)!
+
+	// Wrap ev: .on/.off/.emit etc. are handled locally.
+	// .process() is implemented locally (it just listens to the aggregated
+	// 'event' that the worker forwards).
+	// .buffer/.flush/.createBufferedFunction/.isBuffering are forwarded to
+	// the worker via RPC.
+	const ev = new Proxy(rawEv, {
+		get(target, prop: string) {
+			// Local EventEmitter methods
+			if (prop === 'on' || prop === 'off' || prop === 'emit' ||
+				prop === 'removeListener' || prop === 'addListener' ||
+				prop === 'removeAllListeners' || prop === 'listeners' ||
+				prop === 'listenerCount' || prop === 'eventNames' ||
+				prop === 'getMaxListeners' || prop === 'setMaxListeners' ||
+				prop === 'rawListeners' || prop === 'prependListener' ||
+				prop === 'prependOnceListener' || prop === 'once') {
+				return (target as any)[prop].bind(target)
+			}
+
+			// process() is implemented locally: it listens to the aggregated
+			// 'event' that the worker forwards from the real socket.
+			if (prop === 'process') {
+				return (handler: (events: Record<string, unknown>) => void | Promise<void>) => {
+					const listener = (map: Record<string, unknown>) => {
+						handler(map)
+					}
+					target.on('event', listener)
+					return () => target.off('event', listener)
+				}
+			}
+
+			// Forward other methods (buffer, flush, createBufferedFunction,
+			// isBuffering) to the worker via RPC
+			return (...args: unknown[]) => rpcCall(`ev.${prop}`, args)
+		}
+	})
 
 	// ---- RPC helper ------------------------------------------------------
 	const rpcCall = (method: string, args: unknown[]): Promise<unknown> => {
@@ -396,6 +565,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 function cleanupSocket(slot: WorkerSlot, socketId: number, log: ILogger): void {
 	slot.emitters.delete(socketId)
 	slot.callbacks.delete(socketId)
+	slot.keystores.delete(socketId)
 	slot.loggers.delete(socketId)
 	slot.load = Math.max(0, slot.load - 1)
 
