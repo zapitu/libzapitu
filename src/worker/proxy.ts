@@ -22,6 +22,7 @@ import { EventEmitter } from 'events'
 import { cpus } from 'os'
 import { join } from 'path'
 import type { UserFacingSocketConfig } from '../Types'
+import type { ILogger } from '../Utils/logger'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +46,8 @@ interface WorkerSlot {
 	emitters: Map<number, EventEmitter>
 	/** Per-socket callback stores */
 	callbacks: Map<number, Partial<Record<CallbackKey, Function>>>
+	/** Per-socket loggers (child loggers from the user's config) */
+	loggers: Map<number, ILogger>
 	/** Pending RPC calls keyed by request id */
 	pending: Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>
 }
@@ -75,6 +78,20 @@ const slots: WorkerSlot[] = []
 
 /** Maximum workers allowed (default: CPU count) */
 let maxWorkers: number = cpus().length
+
+/** No-op logger used when config.logger is not provided */
+function createNoopLogger(): ILogger {
+	const noop = () => {}
+	return {
+		level: 'silent',
+		child: () => createNoopLogger(),
+		trace: noop,
+		debug: noop,
+		info: noop,
+		warn: noop,
+		error: noop,
+	} as unknown as ILogger
+}
 
 // ---------------------------------------------------------------------------
 // Pool management
@@ -124,6 +141,7 @@ function spawnWorker(): WorkerSlot {
 		load: 0,
 		emitters: new Map(),
 		callbacks: new Map(),
+		loggers: new Map(),
 		pending: new Map(),
 	}
 
@@ -132,12 +150,16 @@ function spawnWorker(): WorkerSlot {
 		if (!msg || typeof msg !== 'object') return
 
 		const socketId = msg.socketId as number | undefined
+		const log = socketId !== undefined ? slot.loggers.get(socketId) : undefined
 
 		switch (msg.type) {
 			case 'event':
 				if (socketId !== undefined) {
 					const ev = slot.emitters.get(socketId)
-					if (ev) ev.emit(msg.event, msg.data)
+					if (ev) {
+						log?.trace({ event: msg.event, dataKeys: msg.data ? Object.keys(msg.data) : [] }, 'worker event received')
+						ev.emit(msg.event, msg.data)
+					}
 				}
 				break
 
@@ -146,8 +168,10 @@ function spawnWorker(): WorkerSlot {
 				if (p) {
 					slot.pending.delete(msg.id)
 					if (msg.error) {
+						log?.debug({ rpcId: msg.id, error: msg.error }, 'worker RPC error')
 						p.reject(new Error(msg.error))
 					} else {
+						log?.trace({ rpcId: msg.id }, 'worker RPC result')
 						p.resolve(msg.result)
 					}
 				}
@@ -156,18 +180,26 @@ function spawnWorker(): WorkerSlot {
 
 			case 'callback-call':
 				if (socketId !== undefined) {
+					log?.trace({ callbackKey: msg.key, rpcId: msg.id }, 'worker callback call received')
 					handleCallbackCall(slot, socketId, msg)
 				}
 				break
 		}
 	})
 
-	worker.on('error', () => {
+	worker.on('error', (err) => {
+		// Log to all socket loggers on this worker
+		for (const log of slot.loggers.values()) {
+			log.error({ err, workerPid: worker.threadId }, 'worker thread error')
+		}
 		const idx = slots.indexOf(slot)
 		if (idx !== -1) slots.splice(idx, 1)
 	})
 
-	worker.on('exit', () => {
+	worker.on('exit', (code) => {
+		for (const log of slot.loggers.values()) {
+			log.info({ exitCode: code, workerPid: worker.threadId }, 'worker thread exited')
+		}
 		const idx = slots.indexOf(slot)
 		if (idx !== -1) slots.splice(idx, 1)
 	})
@@ -184,7 +216,10 @@ async function handleCallbackCall(
 	const { id, key, args } = msg
 	const store = slot.callbacks.get(socketId)
 	const fn = store?.[key]
+	const log = slot.loggers.get(socketId)
+
 	if (!fn) {
+		log?.error({ callbackKey: key }, 'no callback registered for key')
 		return slot.worker.postMessage({
 			type: 'callback-result',
 			socketId,
@@ -193,9 +228,11 @@ async function handleCallbackCall(
 		})
 	}
 	try {
+		log?.debug({ callbackKey: key, argCount: args.length }, 'invoking proxied callback')
 		const result = await fn(...args)
 		slot.worker.postMessage({ type: 'callback-result', socketId, id, result })
 	} catch (err: any) {
+		log?.error({ err, callbackKey: key }, 'proxied callback threw error')
 		slot.worker.postMessage({
 			type: 'callback-result',
 			socketId,
@@ -211,7 +248,14 @@ async function handleCallbackCall(
  */
 async function resizePool(newSize: number): Promise<void> {
 	if (newSize < 1) newSize = 1
+	const oldSize = maxWorkers
 	maxWorkers = newSize
+
+	// Log to all active loggers
+	const allLoggers = slots.flatMap(s => [...s.loggers.values()])
+	for (const log of allLoggers) {
+		log.info({ oldSize, newSize, currentWorkers: slots.length }, 'pool resized')
+	}
 
 	// Terminate excess idle workers
 	while (slots.length > maxWorkers) {
@@ -219,6 +263,9 @@ async function resizePool(newSize: number): Promise<void> {
 		if (!idleSlot) break // all busy, can't shrink further
 		const idx = slots.indexOf(idleSlot)
 		slots.splice(idx, 1)
+		for (const log of idleSlot.loggers.values()) {
+			log.info({ workerPid: idleSlot.worker.threadId }, 'terminating idle worker (pool shrink)')
+		}
 		await idleSlot.worker.terminate()
 	}
 }
@@ -227,6 +274,11 @@ async function resizePool(newSize: number): Promise<void> {
  * Drain the pool: wait until all sockets are closed, then terminate all workers.
  */
 async function drainPool(): Promise<void> {
+	const allLoggers = slots.flatMap(s => [...s.loggers.values()])
+	for (const log of allLoggers) {
+		log.info({ workerCount: slots.length }, 'draining pool — waiting for all sockets to close')
+	}
+
 	// Wait for all sockets to close (load drops to 0)
 	await new Promise<void>(resolve => {
 		const check = () => {
@@ -240,6 +292,9 @@ async function drainPool(): Promise<void> {
 	})
 
 	// Terminate all workers
+	for (const log of allLoggers) {
+		log.info({ workerCount: slots.length }, 'all sockets closed — terminating workers')
+	}
 	await Promise.all(slots.map(s => s.worker.terminate()))
 	slots.length = 0
 }
@@ -249,6 +304,11 @@ async function drainPool(): Promise<void> {
 // ---------------------------------------------------------------------------
 const makeWASocket = (config: UserFacingSocketConfig) => {
 	const socketId = nextSocketId()
+
+	// ---- Create a child logger for this socket ---------------------------
+	const log: ILogger = config.logger
+		? config.logger.child({ worker: 'proxy', socketId })
+		: createNoopLogger()
 
 	// ---- Extract non-serializable callbacks ------------------------------
 	const callbackStore: Partial<Record<CallbackKey, Function>> = {}
@@ -266,6 +326,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	slot.load++
 	slot.emitters.set(socketId, new EventEmitter())
 	slot.callbacks.set(socketId, callbackStore)
+	slot.loggers.set(socketId, log)
+
+	log.info(
+		{
+			workerPid: slot.worker.threadId,
+			workerLoad: slot.load,
+			poolSize: slots.length,
+			maxWorkers,
+		},
+		'socket assigned to worker'
+	)
 
 	// ---- Send init message to the worker for this socket -----------------
 	slot.worker.postMessage({
@@ -274,12 +345,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		config: serializableConfig,
 	})
 
+	log.debug('init message sent to worker')
+
 	// ---- Public event emitter (local to this socket) ---------------------
 	const ev = slot.emitters.get(socketId)!
 
 	// ---- RPC helper ------------------------------------------------------
 	const rpcCall = (method: string, args: unknown[]): Promise<unknown> => {
 		const id = nextReqId()
+		log.trace({ rpcId: id, method, argCount: args.length }, 'RPC call → worker')
 		return new Promise((resolve, reject) => {
 			slot.pending.set(id, { resolve, reject })
 			slot.worker.postMessage({ type: 'call', socketId, id, method, args })
@@ -297,15 +371,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 				if (prop === 'end') {
 					return async (...args: unknown[]) => {
+						log.info('socket.end() called — cleaning up')
 						try { await rpcCall('end', args) } catch (_) { /* ok */ }
-						cleanupSocket(slot, socketId)
+						cleanupSocket(slot, socketId, log)
 					}
 				}
 
 				if (prop === 'logout') {
 					return async (...args: unknown[]) => {
+						log.info('socket.logout() called — cleaning up')
 						try { await rpcCall('logout', args) } catch (_) { /* ok */ }
-						cleanupSocket(slot, socketId)
+						cleanupSocket(slot, socketId, log)
 					}
 				}
 
@@ -317,16 +393,20 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	return socketProxy
 }
 
-function cleanupSocket(slot: WorkerSlot, socketId: number): void {
+function cleanupSocket(slot: WorkerSlot, socketId: number, log: ILogger): void {
 	slot.emitters.delete(socketId)
 	slot.callbacks.delete(socketId)
+	slot.loggers.delete(socketId)
 	slot.load = Math.max(0, slot.load - 1)
+
+	log.info({ workerLoad: slot.load, poolSize: slots.length }, 'socket cleaned up')
 
 	// If the worker is now idle and we're over capacity, terminate it
 	if (slot.load === 0 && slots.length > maxWorkers) {
 		const idx = slots.indexOf(slot)
 		if (idx !== -1) {
 			slots.splice(idx, 1)
+			log.info({ workerPid: slot.worker.threadId }, 'terminating idle worker (over capacity)')
 			slot.worker.terminate()
 		}
 	}

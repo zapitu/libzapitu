@@ -10,6 +10,7 @@ import { isMainThread, parentPort } from 'worker_threads'
 import makeWASocket from '../Socket'
 import type { UserFacingSocketConfig } from '../Types'
 import type { BaileysEventMap } from '../Types/Events'
+import type { ILogger } from '../Utils/logger'
 
 // ---------------------------------------------------------------------------
 // Ensure we never run this in the main thread
@@ -35,6 +36,7 @@ type ProxiedCallbackKey = (typeof CALLBACK_PROXIED_KEYS)[number]
 interface SocketEntry {
 	sock: ReturnType<typeof makeWASocket>
 	config: UserFacingSocketConfig
+	log: ILogger
 }
 
 const sockets = new Map<number, SocketEntry>()
@@ -42,22 +44,40 @@ const sockets = new Map<number, SocketEntry>()
 let _reqId = 0
 const nextReqId = (): number => ++_reqId
 
+/** No-op logger used when config.logger is not provided */
+function createNoopLogger(): ILogger {
+	const noop = () => {}
+	return {
+		level: 'silent',
+		child: () => createNoopLogger(),
+		trace: noop,
+		debug: noop,
+		info: noop,
+		warn: noop,
+		error: noop,
+	} as unknown as ILogger
+}
+
 // ---------------------------------------------------------------------------
 // Callback proxy helper
 // ---------------------------------------------------------------------------
 function proxyCallback(
 	socketId: number,
 	key: ProxiedCallbackKey,
+	log: ILogger,
 	...args: unknown[]
 ): Promise<unknown> {
 	const id = nextReqId()
+	log.trace({ callbackKey: key, rpcId: id }, 'callback → parent')
 	return new Promise((resolve, reject) => {
 		const onMsg = (msg: any) => {
 			if (msg?.type === 'callback-result' && msg.id === id && msg.socketId === socketId) {
 				parentPort!.off('message', onMsg)
 				if (msg.error) {
+					log.debug({ callbackKey: key, rpcId: id, error: msg.error }, 'callback error from parent')
 					reject(new Error(msg.error))
 				} else {
+					log.trace({ callbackKey: key, rpcId: id }, 'callback result from parent')
 					resolve(msg.result)
 				}
 			}
@@ -73,23 +93,33 @@ function proxyCallback(
 function createSocket(socketId: number, rawConfig: any): void {
 	const config: UserFacingSocketConfig = rawConfig
 
+	// Create a child logger for this socket on the worker side
+	const log: ILogger = config.logger
+		? config.logger.child({ worker: 'child', socketId })
+		: createNoopLogger()
+
+	log.info('creating socket in worker')
+
 	// Replace sentinel callbacks with forwarding stubs
 	for (const k of CALLBACK_PROXIED_KEYS) {
 		if ((config as any)[k] === '__proxy_callback__') {
-			;(config as any)[k] = (...args: unknown[]) => proxyCallback(socketId, k, ...args)
+			;(config as any)[k] = (...args: unknown[]) => proxyCallback(socketId, k, log, ...args)
 		}
 	}
 
 	const sock = makeWASocket(config)
 
+	log.info('socket created successfully')
+
 	// Forward ALL events to the parent, tagged with socketId
 	;(sock.ev as any).on('event', (map: Partial<BaileysEventMap>) => {
 		for (const [event, data] of Object.entries(map)) {
+			log.trace({ event, dataKeys: data ? Object.keys(data) : [] }, 'event → parent')
 			parentPort!.postMessage({ type: 'event', socketId, event, data })
 		}
 	})
 
-	sockets.set(socketId, { sock, config })
+	sockets.set(socketId, { sock, config, log })
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +154,11 @@ parentPort.on('message', async (msg: any) => {
 				return
 			}
 
+			const { sock, log } = entry
+			log.trace({ rpcId: id, method, argCount: args?.length ?? 0 }, 'RPC call received')
+
 			try {
-				let target: any = entry.sock
+				let target: any = sock
 				const path = method.split('.')
 				for (const segment of path) {
 					if (target === null || target === undefined) {
@@ -135,13 +168,16 @@ parentPort.on('message', async (msg: any) => {
 				}
 
 				if (typeof target === 'function') {
-					const thisCtx = path.length > 1 ? resolveTarget(entry.sock, path.slice(0, -1)) : entry.sock
+					const thisCtx = path.length > 1 ? resolveTarget(sock, path.slice(0, -1)) : sock
 					const result = await target.apply(thisCtx, args || [])
+					log.trace({ rpcId: id, method }, 'RPC call succeeded')
 					parentPort!.postMessage({ type: 'result', socketId, id, result })
 				} else {
+					log.trace({ rpcId: id, method }, 'RPC property read')
 					parentPort!.postMessage({ type: 'result', socketId, id, result: target })
 				}
 			} catch (err: any) {
+				log.error({ err, rpcId: id, method }, 'RPC call failed')
 				parentPort!.postMessage({
 					type: 'result',
 					socketId,
