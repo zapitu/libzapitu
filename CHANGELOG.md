@@ -1,3 +1,12 @@
+# [1.0.0-alpha.22](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.21...v1.0.0-alpha.22) (2026-07-30)
+
+
+### Bug Fixes
+
+* **worker:** ensure wsocket.user is populated before connection.update ([af6bd8a](https://github.com/zapitu/libzapitu/commit/af6bd8aba51f3b6011e50abab6c3e2a72df2c0a8))
+
+
+
 # [1.0.0-alpha.21](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.20...v1.0.0-alpha.21) (2026-07-30)
 
 
