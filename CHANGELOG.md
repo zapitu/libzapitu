@@ -1,3 +1,12 @@
+# [1.0.0-alpha.23](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.22...v1.0.0-alpha.23) (2026-07-30)
+
+
+### Bug Fixes
+
+* **worker:** revive Long objects after structured clone in RPC ([567472e](https://github.com/zapitu/libzapitu/commit/567472ec75f742dab0bd908589b0282ba59bee21))
+
+
+
 # [1.0.0-alpha.22](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.21...v1.0.0-alpha.22) (2026-07-30)
 
 
