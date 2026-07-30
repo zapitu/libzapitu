@@ -22,6 +22,7 @@ import { EventEmitter } from 'events'
 import { cpus } from 'os'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import Long from 'long'
 import type { UserFacingSocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
 
@@ -128,11 +129,13 @@ function createNoopLogger(): ILogger {
 
 /**
  * Recursively revive objects that were sanitized by the child's
- * sanitizeForPostMessage (e.g. Error sentinels).
+ * sanitizeForPostMessage (e.g. Error sentinels) or decomposed by
+ * structured clone (e.g. Long → { low, high, unsigned }).
  *
  * IMPORTANT: structured clone already produces a perfect copy of the data.
  * We only need to recursively look for __error__ sentinels and convert
- * them back to Error instances. Everything else passes through unchanged.
+ * them back to Error instances, and revive Long-like plain objects back
+ * to real Long instances. Everything else passes through unchanged.
  */
 function revivePostMessage(value: unknown): any {
 	if (value !== null && typeof value === 'object') {
@@ -142,18 +145,26 @@ function revivePostMessage(value: unknown): any {
 			err.stack = (value as any).stack
 			return err
 		}
+
+		// Revive Long-like objects that were decomposed by structured clone.
+		// protobufjs uses Long for 64-bit integers; after postMessage they
+		// become { low, high, unsigned } plain objects.
+		if (isLongLike(value)) {
+			return new Long((value as any).low, (value as any).high, (value as any).unsigned)
+		}
+
 		if (Array.isArray(value)) {
-			// Arrays: recurse to revive any Error sentinels inside
-			let hasError = false
+			// Arrays: recurse to revive any Error sentinels / Longs inside
+			let changed = false
 			const result = value.map(v => {
 				const revived = revivePostMessage(v)
-				if (revived !== v) hasError = true
+				if (revived !== v) changed = true
 				return revived
 			})
-			return hasError ? result : value
+			return changed ? result : value
 		}
-		// Plain objects: only recurse if they might contain __error__ sentinels.
-		// Check one level deep to avoid unnecessary cloning of large objects.
+		// Plain objects: only recurse if they might contain __error__ sentinels
+		// or Long-like objects.
 		if (value.constructor === Object || value.constructor === undefined) {
 			let changed = false
 			const result: any = {}
@@ -167,6 +178,25 @@ function revivePostMessage(value: unknown): any {
 		}
 	}
 	return value
+}
+
+/**
+ * Check whether a value looks like a protobufjs Long that was decomposed
+ * by structured clone. Long instances have exactly { low, high, unsigned }
+ * after crossing postMessage.
+ */
+function isLongLike(value: unknown): boolean {
+	if (value === null || typeof value !== 'object') return false
+	const keys = Object.keys(value as object)
+	return (
+		keys.length === 3 &&
+		keys.includes('low') &&
+		keys.includes('high') &&
+		keys.includes('unsigned') &&
+		typeof (value as any).low === 'number' &&
+		typeof (value as any).high === 'number' &&
+		typeof (value as any).unsigned === 'boolean'
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +340,7 @@ function spawnWorker(): WorkerSlot {
 						p.reject(new Error(msg.error))
 					} else {
 						log?.trace({ rpcId: msg.id }, 'worker RPC result')
-						p.resolve(msg.result)
+						p.resolve(revivePostMessage(msg.result))
 					}
 				}
 				break
