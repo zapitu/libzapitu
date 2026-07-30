@@ -1,3 +1,15 @@
+# [1.0.0-alpha.21](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.20...v1.0.0-alpha.21) (2026-07-30)
+
+
+### Features
+
+* **example:** add message sending and ack handling to worker-test ([ecedf40](https://github.com/zapitu/libzapitu/commit/ecedf4073a7cec57382bef6f3a5c98c8e2af737b))
+* **example:** add worker mode support to example.ts ([657c098](https://github.com/zapitu/libzapitu/commit/657c09832ff4c2c4510d422f4828fc01f4533510))
+* make shouldIgnoreJid and shouldSync ([0d365a9](https://github.com/zapitu/libzapitu/commit/0d365a992615640bbff842243b1800a1d61ff01b))
+* **worker:** add technical documentation for worker mode ([018d524](https://github.com/zapitu/libzapitu/commit/018d524af3976282fb78cc26e9b2be141c9268ad))
+
+
+
 # [1.0.0-alpha.20](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.19...v1.0.0-alpha.20) (2026-07-29)
 
 
