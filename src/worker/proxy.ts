@@ -251,6 +251,18 @@ function spawnWorker(): WorkerSlot {
 								Object.assign(cfg.auth.creds, map['creds.update'])
 								log?.debug({ me: (cfg.auth.creds as any).me?.id }, 'synced creds.update to parent')
 							}
+
+							// Also update localProps.user so wsocket.user and its
+							// nested properties (id, lid, name, verifiedName, etc.)
+							// stay in sync with the worker's authState.creds.me.
+							const credsUpdate = map['creds.update'] as Record<string, unknown> | undefined
+							if (credsUpdate?.me) {
+								const props = slot.props.get(socketId)
+								if (props) {
+									props.user = { ...(props.user as any), ...(credsUpdate.me as object) }
+									log?.debug({ me: (credsUpdate.me as any)?.id }, 'synced user to localProps')
+								}
+							}
 						}
 
 						// Emit the aggregated 'event' for ev.process() compatibility

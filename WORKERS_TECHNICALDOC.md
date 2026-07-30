@@ -3,7 +3,7 @@
 ## Change Reference
 
 - **Base commit:** `3080d402dbd204619577a83cc3a12c1ed24c627e`
-- **Documented HEAD:** `0d365a9` (branch `rf`)
+- **Documented HEAD:** `0d365a9` (branch `rf`) + post-doc fixes for `wsocket.user` proxy
 - **Scope:** All changes introduced between the base commit and HEAD, generated exclusively from the repository diff.
 
 ## Objective
@@ -19,8 +19,8 @@ Introduce an optional **worker-thread encapsulation mode** for `makeWASocket` so
 
 | File                          | What changed                                                                                                                          |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/worker/child.ts`         | New worker-thread entry point. Runs the real `makeWASocket`, bridges RPC calls, forwards events, and manages per-socket state.        |
-| `src/worker/proxy.ts`         | New parent-thread pool manager. Spawns/holds `Worker` instances, distributes sockets, proxies method calls, and exposes pool control. |
+| `src/worker/child.ts`         | New worker-thread entry point. Runs the real `makeWASocket`, bridges RPC calls, forwards events, manages per-socket state, and sends `socket-info` synchronously on `connection.open`. |
+| `src/worker/proxy.ts`         | New parent-thread pool manager. Spawns/holds `Worker` instances, distributes sockets, proxies method calls, exposes pool control, and syncs `user` properties from `creds.update` events. |
 | `src/worker/index.ts`         | New public subpath export `libzapitu-rf/worker` (or `../src/worker` for source). Re-exports core types/utils and the worker factory.  |
 | `package.json`                | Added `./worker` export, `typesVersions`, bumped version to `1.0.0-alpha.20`, added `node-cache` and `qrcode-terminal` dependencies.  |
 | `Example/example.ts`          | Added `--worker` CLI flag and dynamic import of `../src/worker`; QR printing, reconnect delay, and worker-pool logging.               |
@@ -110,6 +110,7 @@ Non-serializable values are stripped or replaced with sentinels before `postMess
   - `end` / `logout` (call RPC and then run cleanup),
   - a value already cached in the local `props` store (e.g. `user`, `authState`).
 - `set` traps store values locally in `props`.
+- **`user` property sync:** When a `creds.update` event arrives from the worker, the proxy merges `me` into `localProps.user` (in addition to syncing `config.auth.creds`). This keeps `wsocket.user` and all its nested properties (`id`, `lid`, `name`, `verifiedName`, `imgUrl`, `status`, `notify`) in sync with the worker's real `authState.creds.me` across the socket lifecycle.
 
 ### 2.4. Lifecycle & Cleanup
 
@@ -155,7 +156,7 @@ Non-serializable values are stripped or replaced with sentinels before `postMess
 
 - For each proxied callback key, the child posts a `callback-call` message to the parent and waits for a `callback-result`.
 - Keystore operations are dispatched as `keystore.<method>` callback keys.
-- The child also sends `socket-info` messages immediately and on `connection.open` so the parent has access to `user` and `authState`.
+- The child sends `socket-info` messages immediately on socket creation and synchronously inside the `connection.update` listener when `connection === 'open'`. The synchronous call (no `setTimeout`) ensures the `socket-info` message is posted to the parent **before** the `connection.update` event is forwarded, so `wsocket.user` is already populated when the parent's connection handler runs.
 
 ### 3.5. Socket Cleanup
 
@@ -270,3 +271,4 @@ Because callbacks now execute on the parent thread while the socket runs in the 
 | post-alpha.20     | `657c098` | Add worker mode support to `example.ts`.                           |
 | post-alpha.20     | `ecedf40` | Add message sending and ack handling to `worker-test`.             |
 | post-alpha.20     | `0d365a9` | Make `shouldIgnoreJid` and `shouldSyncHistoryMessage` async-aware. |
+| post-alpha.20     | (HEAD)    | Fix `wsocket.user` proxy: send `socket-info` synchronously before `connection.update`; sync `creds.update.me` to `localProps.user`. |

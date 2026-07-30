@@ -220,12 +220,15 @@ function createSocket(socketId: number, rawConfig: any): void {
 		}
 	}
 
-	// Send immediately (may be empty) and also on connection.open
+	// Send immediately (may be empty) and also on connection.open.
+	// IMPORTANT: we send socket-info synchronously in the connection.update
+	// listener so it arrives at the parent BEFORE the forwarded event.
+	// Otherwise wsocket.user would be undefined when the parent's
+	// connection.update handler runs.
 	sendSocketInfo()
 	;(sock.ev as any).on('connection.update', (update: any) => {
 		if (update?.connection === 'open') {
-			// Delay slightly so sock.user is populated
-			setTimeout(sendSocketInfo, 100)
+			sendSocketInfo()
 		}
 
 		// When the socket closes, clean up this socket entry so a new
