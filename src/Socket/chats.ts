@@ -607,21 +607,30 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 */
 	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
 		jid = jidNormalizedUser(jid)
-		const result = await query(
-			{
-				tag: 'iq',
-				attrs: {
-					target: jid,
-					to: S_WHATSAPP_NET,
-					type: 'get',
-					xmlns: 'w:profile:picture'
+		try {
+			const result = await query(
+				{
+					tag: 'iq',
+					attrs: {
+						target: jid,
+						to: S_WHATSAPP_NET,
+						type: 'get',
+						xmlns: 'w:profile:picture'
+					},
+					content: [{ tag: 'picture', attrs: { type, query: 'url' } }]
 				},
-				content: [{ tag: 'picture', attrs: { type, query: 'url' } }]
-			},
-			timeoutMs
-		)
-		const child = getBinaryNodeChild(result, 'picture')
-		return child?.attrs?.url
+				timeoutMs
+			)
+			const child = getBinaryNodeChild(result, 'picture')
+			return child?.attrs?.url
+		} catch (err: any) {
+			// WhatsApp returns 404/"item-not-found" when the contact has no profile picture.
+			// This is a normal situation — return undefined instead of throwing.
+			if (err?.data === 404 || err?.message?.includes('item-not-found')) {
+				return undefined
+			}
+			throw err
+		}
 	}
 
 	const sendPresenceUpdate = async (type: WAPresence, toJid?: string) => {
