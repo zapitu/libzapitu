@@ -1,3 +1,17 @@
+# [1.0.0-alpha.24](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.23...v1.0.0-alpha.24) (2026-07-31)
+
+
+### Bug Fixes
+
+* **chats:** handle missing profile picture gracefully ([9ecfff5](https://github.com/zapitu/libzapitu/commit/9ecfff5fa86d4bc8b58971f6b36b18adc8515156))
+
+
+### Features
+
+* **worker:** add stream serialization for sendMessage RPC ([a516225](https://github.com/zapitu/libzapitu/commit/a51622576cced115b68fb9acfab1f48c514d330e))
+
+
+
 # [1.0.0-alpha.23](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.22...v1.0.0-alpha.23) (2026-07-30)
 
 
