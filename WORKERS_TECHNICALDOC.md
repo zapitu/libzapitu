@@ -122,6 +122,77 @@ Non-serializable values are stripped or replaced with sentinels before `postMess
 
 `revivePostMessage()` converts `__error__` sentinels back into real `Error` instances so that callers receive proper error objects even though the data crossed the worker boundary.
 
+### 2.6. Stream Serialization for `sendMessage`
+
+The `sendMessage` method accepts `WAMediaUpload` values that can contain `Readable` streams (`{ stream: Readable }`). Since `worker.postMessage()` uses the structured clone algorithm, which cannot serialize streams, the proxy must convert them before crossing the RPC boundary.
+
+#### Strategy
+
+```
+{ stream: Readable }
+        │
+        ▼
+  tryGetStreamSize()
+        │
+   ┌────┴────┐
+   │ known   │ unknown
+   ▼         ▼
+ ≤50MB?   temp file
+  │  │
+  ▼  ▼
+buffer temp file
+  │      │
+  ▼      ▼
+Buffer  { url: "/tmp/zapitu-proxy-upload-..." }
+```
+
+| Scenario | Action | Rationale |
+|---|---|---|
+| Size known, ≤ 50 MB | Read stream into `Buffer` | Fast, no disk I/O, fits comfortably in memory |
+| Size known, > 50 MB | Write to temp file, pass `{ url: filePath }` | Avoids memory pressure from large uploads |
+| Size unknown | Write to temp file (safe default) | Cannot risk buffering an unbounded stream |
+
+#### Size Detection
+
+`tryGetStreamSize()` checks `headers['content-length']` on HTTP-like streams (e.g., axios responses). For `fs.ReadStream` or generic `Readable` instances, the size is treated as unknown and the temp-file path is taken.
+
+#### Conversion Functions
+
+| Function | Purpose |
+|---|---|
+| `streamToBuffer(stream, maxBytes)` | Reads stream into a `Buffer`, enforcing a hard byte limit. Destroys the stream and throws if exceeded. |
+| `streamToTempFile(stream)` | Pipes stream to `$TMPDIR/zapitu-proxy-upload-{ts}-{random}`. Cleans up partial file on error. |
+| `serializeStream(stream)` | Decision logic: chooses buffer or temp file based on known size. |
+| `serializeStreamArgs(args)` | Recursively walks `sendMessage` arguments, finds `{ stream: Readable }` shapes, converts them. Returns `{ processed, cleanup }`. |
+
+#### Worker-Side Compatibility
+
+- **Buffer path:** The raw `Buffer` is passed directly. The worker's `getStream()` handles `Buffer.isBuffer(item)` natively.
+- **Temp file path:** The stream is replaced with `{ url: filePath }`. The worker's `getStream()` treats it as a local file via `createReadStream(item.url)`.
+
+#### Cleanup
+
+Temp files are deleted in a `finally` block after the RPC call completes (success or failure), using `Promise.allSettled` so one failed unlink does not block others.
+
+#### Proxy Hook
+
+The `sendMessage` handler in the socket proxy is special-cased:
+
+```ts
+if (prop === 'sendMessage') {
+    return async (...args: unknown[]) => {
+        const { processed, cleanup } = await serializeStreamArgs(args)
+        try {
+            return await rpcCall('sendMessage', processed)
+        } finally {
+            await cleanup()
+        }
+    }
+}
+```
+
+No other methods require this treatment — `WAMediaUpload` only flows through `sendMessage`.
+
 ---
 
 ## 3. Worker-Child Bridge (`src/worker/child.ts`)
@@ -256,6 +327,7 @@ Because callbacks now execute on the parent thread while the socket runs in the 
 4. **WebSocket close / socket end / logout are cleanup-aware.** Calling them after the socket is already cleaned up is a no-op rather than throwing.
 5. **Pool stats are live snapshots.** `sock.pool` evaluates `getStats()` on every read.
 6. **The `cleanupSocket` function contains dead code after the final `return` statement.** The post-return idle-worker termination block is currently unreachable in the existing implementation.
+7. **Stream-based media uploads are converted at the proxy boundary.** `Readable` streams passed to `sendMessage` are eagerly consumed into a `Buffer` (≤ 50 MB) or a temp file (> 50 MB / unknown size) before crossing the RPC boundary. This means the stream is fully read on the parent thread before the worker begins processing — acceptable because the worker's `encryptedStream()` reads the entire file anyway for encryption.
 
 ---
 
@@ -272,3 +344,4 @@ Because callbacks now execute on the parent thread while the socket runs in the 
 | post-alpha.20     | `ecedf40` | Add message sending and ack handling to `worker-test`.             |
 | post-alpha.20     | `0d365a9` | Make `shouldIgnoreJid` and `shouldSyncHistoryMessage` async-aware. |
 | post-alpha.20     | (HEAD)    | Fix `wsocket.user` proxy: send `socket-info` synchronously before `connection.update`; sync `creds.update.me` to `localProps.user`. |
+| post-alpha.20     | (HEAD)    | Add hybrid stream serialization for `sendMessage` RPC: buffer ≤ 50 MB, temp file for larger/unknown streams. |

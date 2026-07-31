@@ -20,11 +20,179 @@
 import { Worker } from 'worker_threads'
 import { EventEmitter } from 'events'
 import { cpus } from 'os'
-import { existsSync } from 'fs'
+import { existsSync, promises as fsPromises } from 'fs'
+import { createWriteStream } from 'fs'
 import { join } from 'path'
+import { Readable, pipeline } from 'stream'
+import { promisify } from 'util'
+import { tmpdir } from 'os'
 import Long from 'long'
 import type { UserFacingSocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
+
+const pipelineAsync = promisify(pipeline)
+
+// ---------------------------------------------------------------------------
+// Stream serialization for RPC boundary
+// ---------------------------------------------------------------------------
+
+/** Maximum bytes to buffer in memory before falling back to a temp file. */
+const STREAM_BUFFER_MAX_BYTES = 50 * 1024 * 1024 // 50 MB
+
+/**
+ * Result of converting a Readable stream into a postMessage-safe form.
+ *
+ * - `buffer`: the stream was small enough (or size was known and ≤ max) and
+ *   was fully read into a Buffer.
+ * - `tempFilePath`: the stream was too large or its size was unknown; data
+ *   was written to a temporary file. The path is passed to the worker, which
+ *   reads it via `createReadStream`.
+ */
+type SerializedStream =
+	| { buffer: Buffer }
+	| { tempFilePath: string }
+
+/**
+ * Read a Readable stream into a Buffer, enforcing a maximum size.
+ * If the stream exceeds `maxBytes`, it is destroyed and an error is thrown.
+ */
+async function streamToBuffer(stream: Readable, maxBytes: number): Promise<Buffer> {
+	const chunks: Buffer[] = []
+	let totalBytes = 0
+
+	for await (const chunk of stream) {
+		const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+		totalBytes += buf.length
+		if (totalBytes > maxBytes) {
+			stream.destroy()
+			throw new Error(`Stream exceeds maximum buffer size of ${maxBytes} bytes`)
+		}
+		chunks.push(buf)
+	}
+
+	return Buffer.concat(chunks)
+}
+
+/**
+ * Write a Readable stream to a temporary file.
+ * Returns the absolute path to the temp file.
+ */
+async function streamToTempFile(stream: Readable): Promise<string> {
+	const tmpPath = join(tmpdir(), `zapitu-proxy-upload-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+	const writeStream = createWriteStream(tmpPath)
+
+	try {
+		await pipelineAsync(stream, writeStream)
+		return tmpPath
+	} catch (err) {
+		// Clean up partial file on error
+		try {
+			await fsPromises.unlink(tmpPath)
+		} catch {
+			/* best-effort */
+		}
+		throw err
+	}
+}
+
+/**
+ * Attempt to determine the byte size of a stream from its known properties.
+ * Returns `undefined` if the size cannot be determined without consuming.
+ */
+function tryGetStreamSize(stream: Readable): number | undefined {
+	// fs.ReadStream exposes bytesRead + a path we could stat, but bytesRead
+	// is only populated after reading. Check for content-length on HTTP-like
+	// streams (e.g. axios responses).
+	const headers = (stream as any)?.headers as Record<string, string> | undefined
+	if (headers?.['content-length']) {
+		const len = parseInt(headers['content-length'], 10)
+		if (!isNaN(len)) return len
+	}
+
+	// readableLength is a Node.js internal that gives buffered bytes, not total.
+	// Not useful here.
+
+	return undefined
+}
+
+/**
+ * Convert a Readable stream into a postMessage-safe representation.
+ *
+ * Strategy:
+ * 1. If the stream size is known and ≤ 50 MB → buffer in memory.
+ * 2. If the stream size is known and > 50 MB → write to temp file.
+ * 3. If the stream size is unknown → write to temp file (safe default).
+ *
+ * The caller is responsible for cleaning up temp files after the RPC call
+ * completes (success or failure).
+ */
+async function serializeStream(stream: Readable): Promise<SerializedStream> {
+	const knownSize = tryGetStreamSize(stream)
+
+	if (knownSize !== undefined && knownSize <= STREAM_BUFFER_MAX_BYTES) {
+		const buffer = await streamToBuffer(stream, STREAM_BUFFER_MAX_BYTES)
+		return { buffer }
+	}
+
+	// Unknown size or known to be large → temp file
+	const tempFilePath = await streamToTempFile(stream)
+	return { tempFilePath }
+}
+
+/**
+ * Recursively walk an argument tree and convert any `{ stream: Readable }`
+ * objects into postMessage-safe representations.
+ *
+ * After this function, the args are safe to pass to `worker.postMessage()`.
+ * Returns a cleanup function that should be called after the RPC completes
+ * to remove any temp files that were created.
+ */
+async function serializeStreamArgs(
+	args: unknown[]
+): Promise<{ processed: unknown[]; cleanup: () => Promise<void> }> {
+	const tempFiles: string[] = []
+
+	const walk = async (value: unknown): Promise<unknown> => {
+		if (value === null || value === undefined) return value
+		if (typeof value !== 'object') return value
+
+		// Detect { stream: Readable } — the WAMediaPayloadStream shape
+		if ('stream' in (value as any) && (value as any).stream instanceof Readable) {
+			const stream = (value as any).stream as Readable
+			const result = await serializeStream(stream)
+			if ('tempFilePath' in result) {
+				tempFiles.push(result.tempFilePath)
+				// Replace with { url: filePath } so the worker's getStream()
+				// treats it as a local file path (WAMediaPayloadURL shape).
+				return { url: result.tempFilePath }
+			}
+			// Buffer — pass directly; the worker's getStream() handles Buffer natively
+			return result.buffer
+		}
+
+		if (Array.isArray(value)) {
+			return Promise.all(value.map(v => walk(v)))
+		}
+
+		if (Buffer.isBuffer(value) || value instanceof Uint8Array || value instanceof ArrayBuffer) {
+			return value
+		}
+
+		const result: Record<string, unknown> = {}
+		for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+			result[key] = await walk(val)
+		}
+		return result
+	}
+
+	const processed = await Promise.all(args.map(a => walk(a)))
+
+	const cleanup = async () => {
+		await Promise.allSettled(tempFiles.map(p => fsPromises.unlink(p).catch(() => {})))
+	}
+
+	return { processed, cleanup }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -756,6 +924,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 							/* ok */
 						}
 						cleanupSocket(slot, socketId, log)
+					}
+				}
+
+				if (prop === 'sendMessage') {
+					return async (...args: unknown[]) => {
+						const { processed, cleanup } = await serializeStreamArgs(args)
+						try {
+							return await rpcCall('sendMessage', processed)
+						} finally {
+							await cleanup()
+						}
 					}
 				}
 
