@@ -27,6 +27,7 @@ import { Readable, pipeline } from 'stream'
 import { promisify } from 'util'
 import { tmpdir } from 'os'
 import Long from 'long'
+import { proto } from '../../WAProto'
 import type { UserFacingSocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
 
@@ -48,9 +49,7 @@ const STREAM_BUFFER_MAX_BYTES = 50 * 1024 * 1024 // 50 MB
  *   was written to a temporary file. The path is passed to the worker, which
  *   reads it via `createReadStream`.
  */
-type SerializedStream =
-	| { buffer: Buffer }
-	| { tempFilePath: string }
+type SerializedStream = { buffer: Buffer } | { tempFilePath: string }
 
 /**
  * Read a Readable stream into a Buffer, enforcing a maximum size.
@@ -147,9 +146,7 @@ async function serializeStream(stream: Readable): Promise<SerializedStream> {
  * Returns a cleanup function that should be called after the RPC completes
  * to remove any temp files that were created.
  */
-async function serializeStreamArgs(
-	args: unknown[]
-): Promise<{ processed: unknown[]; cleanup: () => Promise<void> }> {
+async function serializeStreamArgs(args: unknown[]): Promise<{ processed: unknown[]; cleanup: () => Promise<void> }> {
 	const tempFiles: string[] = []
 
 	const walk = async (value: unknown): Promise<unknown> => {
@@ -296,22 +293,68 @@ function createNoopLogger(): ILogger {
 }
 
 /**
- * Recursively revive objects that were sanitized by the child's
- * sanitizeForPostMessage (e.g. Error sentinels) or decomposed by
- * structured clone (e.g. Long → { low, high, unsigned }).
+ * Build a lookup table from protobufjs type name to the generated
+ * constructor. This lets us revive a message that was serialized to JSON
+ * in the worker back into a real protobuf instance on the parent side.
+ */
+function buildProtobufTypeRegistry(namespace: any, result = new Map<string, any>()): Map<string, any> {
+	for (const [key, value] of Object.entries(namespace)) {
+		if (typeof value === 'function' && (value as any).fromObject && (value as any).encode && (value as any).decode) {
+			result.set((value as any).name || key, value)
+		} else if (value !== null && typeof value === 'object' && !(value as any).fromObject) {
+			buildProtobufTypeRegistry(value, result)
+		}
+	}
+
+	return result
+}
+
+const PROTOBUF_TYPE_REGISTRY = buildProtobufTypeRegistry(proto)
+
+/**
+ * Recursively revive objects that were serialized by the child's
+ * serializeForPostMessage (e.g. Error sentinels, protobuf messages) or
+ * decomposed by structured clone (e.g. Long → { low, high, unsigned },
+ * Buffer → Uint8Array).
  *
- * IMPORTANT: structured clone already produces a perfect copy of the data.
- * We only need to recursively look for __error__ sentinels and convert
- * them back to Error instances, and revive Long-like plain objects back
- * to real Long instances. Everything else passes through unchanged.
+ * Protobuf message instances are converted to JSON by the child, tagged with
+ * __protobufType__, and then revived here with the corresponding
+ * constructor's fromObject(). This restores the runtime Buffer/Long types
+ * that downstream code expects while keeping JSON.stringify output identical
+ * to direct mode (base64 strings for bytes, strings for 64-bit integers).
  */
 function revivePostMessage(value: unknown): any {
+	// After structured clone, Buffer subclasses become plain Uint8Arrays.
+	// Restore them to Buffer so downstream code gets the same type as in
+	// direct mode for non-protobuf binary fields.
+	if (value instanceof Uint8Array && !Buffer.isBuffer(value)) {
+		return Buffer.from(value)
+	}
+
 	if (value !== null && typeof value === 'object') {
 		if ((value as any).__error__) {
 			const err = new Error((value as any).message)
 			err.name = (value as any).name
 			err.stack = (value as any).stack
 			return err
+		}
+
+		// Revive protobuf messages tagged by the child. fromObject() will
+		// recursively recreate nested protobuf instances and convert base64
+		// strings back into Buffer instances.
+		const protobufType = (value as any).__protobufType__ as string | undefined
+		if (protobufType) {
+			const type = PROTOBUF_TYPE_REGISTRY.get(protobufType)
+			if (type?.fromObject) {
+				const copy = { ...(value as object) } as Record<string, unknown>
+				delete copy.__protobufType__
+				try {
+					return type.fromObject(copy)
+				} catch {
+					// Fall back to the plain JSON object if fromObject fails;
+					// downstream code will see base64 strings instead of Buffers.
+				}
+			}
 		}
 
 		// Revive Long-like objects that were decomposed by structured clone.
@@ -322,7 +365,7 @@ function revivePostMessage(value: unknown): any {
 		}
 
 		if (Array.isArray(value)) {
-			// Arrays: recurse to revive any Error sentinels / Longs inside
+			// Arrays: recurse to revive any Error sentinels / Longs / Uint8Arrays / protobuf messages inside
 			let changed = false
 			const result = value.map(v => {
 				const revived = revivePostMessage(v)
@@ -331,8 +374,8 @@ function revivePostMessage(value: unknown): any {
 			})
 			return changed ? result : value
 		}
-		// Plain objects: only recurse if they might contain __error__ sentinels
-		// or Long-like objects.
+		// Plain objects: only recurse if they might contain __error__ sentinels,
+		// Long-like objects, Uint8Arrays, or protobuf markers.
 		if (value.constructor === Object || value.constructor === undefined) {
 			let changed = false
 			const result: any = {}

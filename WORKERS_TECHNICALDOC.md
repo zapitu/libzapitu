@@ -17,19 +17,19 @@ Introduce an optional **worker-thread encapsulation mode** for `makeWASocket` so
 
 ## Summary of Changed Files
 
-| File                          | What changed                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/worker/child.ts`         | New worker-thread entry point. Runs the real `makeWASocket`, bridges RPC calls, forwards events, manages per-socket state, and sends `socket-info` synchronously on `connection.open`. |
+| File                          | What changed                                                                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/worker/child.ts`         | New worker-thread entry point. Runs the real `makeWASocket`, bridges RPC calls, forwards events, manages per-socket state, and sends `socket-info` synchronously on `connection.open`.    |
 | `src/worker/proxy.ts`         | New parent-thread pool manager. Spawns/holds `Worker` instances, distributes sockets, proxies method calls, exposes pool control, and syncs `user` properties from `creds.update` events. |
-| `src/worker/index.ts`         | New public subpath export `libzapitu-rf/worker` (or `../src/worker` for source). Re-exports core types/utils and the worker factory.  |
-| `package.json`                | Added `./worker` export, `typesVersions`, bumped version to `1.0.0-alpha.20`, added `node-cache` and `qrcode-terminal` dependencies.  |
-| `Example/example.ts`          | Added `--worker` CLI flag and dynamic import of `../src/worker`; QR printing, reconnect delay, and worker-pool logging.               |
-| `Example/worker-test.ts`      | New dedicated example that connects via worker mode, sends a message, and waits for acks and replies.                                 |
-| `src/Types/Socket.ts`         | `shouldSyncHistoryMessage` and `shouldIgnoreJid` now accept async return values.                                                      |
-| `src/Socket/chats.ts`         | `shouldSyncHistoryMessage` call is awaited.                                                                                           |
-| `src/Socket/messages-recv.ts` | `shouldIgnoreJid` calls are awaited in notification/message/presence/receipt handlers.                                                |
-| `src/Utils/logger.ts`         | Default log level now reads from `BAILEYS_LOG_LEVEL` environment variable (fallback `info`).                                          |
-| `CHANGELOG.md`                | Auto-generated entries for `v1.0.0-alpha.17` through `v1.0.0-alpha.20`.                                                               |
+| `src/worker/index.ts`         | New public subpath export `libzapitu-rf/worker` (or `../src/worker` for source). Re-exports core types/utils and the worker factory.                                                      |
+| `package.json`                | Added `./worker` export, `typesVersions`, bumped version to `1.0.0-alpha.20`, added `node-cache` and `qrcode-terminal` dependencies.                                                      |
+| `Example/example.ts`          | Added `--worker` CLI flag and dynamic import of `../src/worker`; QR printing, reconnect delay, and worker-pool logging.                                                                   |
+| `Example/worker-test.ts`      | New dedicated example that connects via worker mode, sends a message, and waits for acks and replies.                                                                                     |
+| `src/Types/Socket.ts`         | `shouldSyncHistoryMessage` and `shouldIgnoreJid` now accept async return values.                                                                                                          |
+| `src/Socket/chats.ts`         | `shouldSyncHistoryMessage` call is awaited.                                                                                                                                               |
+| `src/Socket/messages-recv.ts` | `shouldIgnoreJid` calls are awaited in notification/message/presence/receipt handlers.                                                                                                    |
+| `src/Utils/logger.ts`         | Default log level now reads from `BAILEYS_LOG_LEVEL` environment variable (fallback `info`).                                                                                              |
+| `CHANGELOG.md`                | Auto-generated entries for `v1.0.0-alpha.17` through `v1.0.0-alpha.20`.                                                                                                                   |
 
 ---
 
@@ -146,11 +146,11 @@ buffer temp file
 Buffer  { url: "/tmp/zapitu-proxy-upload-..." }
 ```
 
-| Scenario | Action | Rationale |
-|---|---|---|
-| Size known, ≤ 50 MB | Read stream into `Buffer` | Fast, no disk I/O, fits comfortably in memory |
-| Size known, > 50 MB | Write to temp file, pass `{ url: filePath }` | Avoids memory pressure from large uploads |
-| Size unknown | Write to temp file (safe default) | Cannot risk buffering an unbounded stream |
+| Scenario            | Action                                       | Rationale                                     |
+| ------------------- | -------------------------------------------- | --------------------------------------------- |
+| Size known, ≤ 50 MB | Read stream into `Buffer`                    | Fast, no disk I/O, fits comfortably in memory |
+| Size known, > 50 MB | Write to temp file, pass `{ url: filePath }` | Avoids memory pressure from large uploads     |
+| Size unknown        | Write to temp file (safe default)            | Cannot risk buffering an unbounded stream     |
 
 #### Size Detection
 
@@ -158,12 +158,12 @@ Buffer  { url: "/tmp/zapitu-proxy-upload-..." }
 
 #### Conversion Functions
 
-| Function | Purpose |
-|---|---|
-| `streamToBuffer(stream, maxBytes)` | Reads stream into a `Buffer`, enforcing a hard byte limit. Destroys the stream and throws if exceeded. |
-| `streamToTempFile(stream)` | Pipes stream to `$TMPDIR/zapitu-proxy-upload-{ts}-{random}`. Cleans up partial file on error. |
-| `serializeStream(stream)` | Decision logic: chooses buffer or temp file based on known size. |
-| `serializeStreamArgs(args)` | Recursively walks `sendMessage` arguments, finds `{ stream: Readable }` shapes, converts them. Returns `{ processed, cleanup }`. |
+| Function                           | Purpose                                                                                                                          |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `streamToBuffer(stream, maxBytes)` | Reads stream into a `Buffer`, enforcing a hard byte limit. Destroys the stream and throws if exceeded.                           |
+| `streamToTempFile(stream)`         | Pipes stream to `$TMPDIR/zapitu-proxy-upload-{ts}-{random}`. Cleans up partial file on error.                                    |
+| `serializeStream(stream)`          | Decision logic: chooses buffer or temp file based on known size.                                                                 |
+| `serializeStreamArgs(args)`        | Recursively walks `sendMessage` arguments, finds `{ stream: Readable }` shapes, converts them. Returns `{ processed, cleanup }`. |
 
 #### Worker-Side Compatibility
 
@@ -180,14 +180,14 @@ The `sendMessage` handler in the socket proxy is special-cased:
 
 ```ts
 if (prop === 'sendMessage') {
-    return async (...args: unknown[]) => {
-        const { processed, cleanup } = await serializeStreamArgs(args)
-        try {
-            return await rpcCall('sendMessage', processed)
-        } finally {
-            await cleanup()
-        }
-    }
+	return async (...args: unknown[]) => {
+		const { processed, cleanup } = await serializeStreamArgs(args)
+		try {
+			return await rpcCall('sendMessage', processed)
+		} finally {
+			await cleanup()
+		}
+	}
 }
 ```
 
@@ -213,7 +213,12 @@ No other methods require this treatment — `WAMediaUpload` only flows through `
 ### 3.2. Event Forwarding
 
 - All Baileys events from `sock.ev` are forwarded to the parent as `event` messages.
-- If a message cannot be cloned, the child falls back to `sanitizeForPostMessage()` which converts `Error` objects to plain `__error__` sentinels and replaces functions with `'__fn__'`.
+- Before crossing the boundary, events are passed through `serializeForPostMessage()`, which:
+  - Converts protobufjs message instances (e.g. `proto.Message`, `proto.WebMessageInfo`) to JSON so byte fields become base64 strings and 64-bit integer fields become strings, matching direct-mode `JSON.stringify` output.
+  - Tags each converted protobuf message with `__protobufType__` so the parent can revive it back into a real protobuf instance.
+  - Converts `Error` objects to plain `__error__` sentinels.
+  - Replaces functions with `'__fn__'`.
+- On the parent side, `revivePostMessage()` rebuilds the protobuf message instances from the tagged JSON using the corresponding constructor's `fromObject()`. This restores runtime `Buffer` / `Long` types so downstream code that decrypts messages or accesses binary fields receives the same types as in direct mode.
 - WebSocket events are forwarded by monkey-patching `sock.ws.emit` so that `ws.on(...)` works on the proxy side.
 
 ### 3.3. RPC Handling
@@ -288,7 +293,7 @@ Because callbacks now execute on the parent thread while the socket runs in the 
 ### 6.2. Worker Child Logging
 
 - Worker children log socket creation, RPC calls, event forwarding, callback handling, and errors through a real logger derived from the parent config.
-- Errors are sanitized with `sanitizeForPostMessage` before crossing the worker boundary.
+- Errors and non-cloneable values are serialized with `serializeForPostMessage` before crossing the worker boundary.
 
 ---
 
@@ -333,15 +338,15 @@ Because callbacks now execute on the parent thread while the socket runs in the 
 
 ## 9. Version History Covered
 
-| Version           | Commit    | Summary                                                            |
-| ----------------- | --------- | ------------------------------------------------------------------ |
-| `v1.0.0-alpha.17` | `2907550` | Worker thread entry point for `makeWASocket`.                      |
-| `v1.0.0-alpha.17` | `50623f3` | Support multiple concurrent sockets per worker thread.             |
-| `v1.0.0-alpha.18` | `46ecb1a` | Add `typesVersions` for worker subpath.                            |
-| `v1.0.0-alpha.19` | `e75b231` | Add logging to worker child and proxy.                             |
-| `v1.0.0-alpha.20` | `706440d` | Add worker test example and sanitize child proxy errors.           |
-| post-alpha.20     | `657c098` | Add worker mode support to `example.ts`.                           |
-| post-alpha.20     | `ecedf40` | Add message sending and ack handling to `worker-test`.             |
-| post-alpha.20     | `0d365a9` | Make `shouldIgnoreJid` and `shouldSyncHistoryMessage` async-aware. |
+| Version           | Commit    | Summary                                                                                                                             |
+| ----------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `v1.0.0-alpha.17` | `2907550` | Worker thread entry point for `makeWASocket`.                                                                                       |
+| `v1.0.0-alpha.17` | `50623f3` | Support multiple concurrent sockets per worker thread.                                                                              |
+| `v1.0.0-alpha.18` | `46ecb1a` | Add `typesVersions` for worker subpath.                                                                                             |
+| `v1.0.0-alpha.19` | `e75b231` | Add logging to worker child and proxy.                                                                                              |
+| `v1.0.0-alpha.20` | `706440d` | Add worker test example and sanitize child proxy errors.                                                                            |
+| post-alpha.20     | `657c098` | Add worker mode support to `example.ts`.                                                                                            |
+| post-alpha.20     | `ecedf40` | Add message sending and ack handling to `worker-test`.                                                                              |
+| post-alpha.20     | `0d365a9` | Make `shouldIgnoreJid` and `shouldSyncHistoryMessage` async-aware.                                                                  |
 | post-alpha.20     | (HEAD)    | Fix `wsocket.user` proxy: send `socket-info` synchronously before `connection.update`; sync `creds.update.me` to `localProps.user`. |
-| post-alpha.20     | (HEAD)    | Add hybrid stream serialization for `sendMessage` RPC: buffer ≤ 50 MB, temp file for larger/unknown streams. |
+| post-alpha.20     | (HEAD)    | Add hybrid stream serialization for `sendMessage` RPC: buffer ≤ 50 MB, temp file for larger/unknown streams.                        |

@@ -88,10 +88,19 @@ function proxyCallback(socketId: number, key: ProxiedCallbackKey, log: ILogger, 
 // ---------------------------------------------------------------------------
 
 /**
- * Recursively clone a value, replacing non-cloneable types (Error, Function)
- * with plain serializable representations.
+ * Recursively clone a value for postMessage, replacing non-cloneable types
+ * (Error, Function) with plain serializable representations and converting
+ * protobufjs message instances to JSON.
+ *
+ * Protobuf messages (e.g. proto.Message, proto.WebMessageInfo) carry a
+ * toJSON() method that serializes byte fields as base64 strings and 64-bit
+ * integer fields as strings. Structured clone strips the prototype chain, so
+ * without this step Buffers become Uint8Array plain objects and Longs become
+ * { low, high, unsigned } objects on the parent side. Converting them before
+ * crossing the boundary keeps the worker event shape identical to direct mode
+ * when the data is logged or JSON.stringify'd.
  */
-function sanitizeForPostMessage(value: unknown, seen = new WeakSet()): any {
+function serializeForPostMessage(value: unknown, seen = new WeakSet()): any {
 	if (value instanceof Error) {
 		return { __error__: true, message: value.message, name: value.name, stack: value.stack }
 	}
@@ -101,8 +110,29 @@ function sanitizeForPostMessage(value: unknown, seen = new WeakSet()): any {
 	if (value !== null && typeof value === 'object') {
 		if (seen.has(value as object)) return '[Circular]'
 		seen.add(value as object)
+
+		// Detect a protobufjs message instance by the static methods its
+		// constructor exposes, then use the instance's own toJSON() so nested
+		// bytes/long fields are serialized consistently. Tag the resulting
+		// plain object with the constructor name so the parent can revive it
+		// back into a real protobuf instance (and therefore recover the
+		// runtime Buffer types downstream code expects).
+		const ctor = (value as any).constructor
+		if (
+			ctor &&
+			typeof ctor === 'function' &&
+			typeof ctor.encode === 'function' &&
+			typeof ctor.decode === 'function' &&
+			typeof ctor.toObject === 'function' &&
+			typeof (value as any).toJSON === 'function'
+		) {
+			const json = (value as any).toJSON()
+			json.__protobufType__ = ctor.name
+			return serializeForPostMessage(json, seen)
+		}
+
 		if (Array.isArray(value)) {
-			return value.map(v => sanitizeForPostMessage(v, seen))
+			return value.map(v => serializeForPostMessage(v, seen))
 		}
 		// Preserve binary/typed-array types — structured clone handles them natively
 		if (
@@ -115,7 +145,7 @@ function sanitizeForPostMessage(value: unknown, seen = new WeakSet()): any {
 		}
 		const result: any = {}
 		for (const key of Object.keys(value as object)) {
-			result[key] = sanitizeForPostMessage((value as any)[key], seen)
+			result[key] = serializeForPostMessage((value as any)[key], seen)
 		}
 		return result
 	}
@@ -245,19 +275,15 @@ function createSocket(socketId: number, rawConfig: any): void {
 	// Forward ALL events to the parent, tagged with socketId.
 	// Send the aggregated map so the parent can emit both the 'event'
 	// aggregate (for ev.process()) and individual typed events.
+	// Protobuf message instances are converted to JSON first so the worker
+	// boundary does not turn their byte/long fields into Uint8Arrays / Long
+	// plain objects.
 	;(sock.ev as any).on('event', (map: Partial<BaileysEventMap>) => {
 		log.trace({ eventKeys: Object.keys(map) }, 'event → parent')
 		try {
-			parentPort!.postMessage({ type: 'event', socketId, map })
+			parentPort!.postMessage({ type: 'event', socketId, map: serializeForPostMessage(map) })
 		} catch (err: any) {
 			log.error({ err, eventKeys: Object.keys(map) }, 'failed to send event to parent (non-cloneable data)')
-			// Attempt to send a sanitized version without Error objects
-			try {
-				const sanitized = sanitizeForPostMessage(map)
-				parentPort!.postMessage({ type: 'event', socketId, map: sanitized })
-			} catch (_) {
-				log.error({ eventKeys: Object.keys(map) }, 'event dropped — could not sanitize')
-			}
 		}
 	})
 
@@ -330,10 +356,10 @@ parentPort.on('message', async (msg: any) => {
 					const thisCtx = path.length > 1 ? resolveTarget(sock, path.slice(0, -1)) : sock
 					const result = await target.apply(thisCtx, args || [])
 					log.trace({ rpcId: id, method }, 'RPC call succeeded')
-					parentPort!.postMessage({ type: 'result', socketId, id, result })
+					parentPort!.postMessage({ type: 'result', socketId, id, result: serializeForPostMessage(result) })
 				} else {
 					log.trace({ rpcId: id, method }, 'RPC property read')
-					parentPort!.postMessage({ type: 'result', socketId, id, result: target })
+					parentPort!.postMessage({ type: 'result', socketId, id, result: serializeForPostMessage(target) })
 				}
 			} catch (err: any) {
 				log.error({ err, rpcId: id, method }, 'RPC call failed')
