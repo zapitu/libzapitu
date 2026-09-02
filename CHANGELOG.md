@@ -1,3 +1,12 @@
+# [1.0.0-alpha.26](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.25...v1.0.0-alpha.26) (2026-09-02)
+
+
+### Features
+
+* **worker:** enhance serialization of built-in value objects and Boom errors in worker mode ([2d2a669](https://github.com/zapitu/libzapitu/commit/2d2a669a3182b93cf0beba4348fc581aff75c702))
+
+
+
 # [1.0.0-alpha.25](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.24...v1.0.0-alpha.25) (2026-08-01)
 
 
