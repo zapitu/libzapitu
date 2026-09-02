@@ -94,6 +94,8 @@ Non-serializable values are stripped or replaced with sentinels before `postMess
 - `makeSignalRepository` → `'__worker_signal_repository__'`; the child recreates the libsignal repository locally.
 - Worker-local caches (`msgRetryCounterCache`, `mediaCache`, `userDevicesCache`, `callOfferCache`, `placeholderResendCache`) → `'__worker_cache__'`; fresh `NodeCache` instances are created in the worker.
 - `agent` and `fetchAgent` → `undefined`; the worker creates its own HTTP agents.
+- Built-in value objects (`Date`, `RegExp`, `URL`, `Map`, `Set`) are preserved as tagged plain objects by `deepStripFunctions()` so they survive `Object.keys()`-based cloning.
+- Callback results returned from the parent to the worker are passed through `deepStripFunctions()` so Buffers remain Buffers and value objects are preserved.
 
 ### 2.3. Proxy Behavior
 
@@ -216,9 +218,13 @@ No other methods require this treatment — `WAMediaUpload` only flows through `
 - Before crossing the boundary, events are passed through `serializeForPostMessage()`, which:
   - Converts protobufjs message instances (e.g. `proto.Message`, `proto.WebMessageInfo`) to JSON so byte fields become base64 strings and 64-bit integer fields become strings, matching direct-mode `JSON.stringify` output.
   - Tags each converted protobuf message with `__protobufType__` so the parent can revive it back into a real protobuf instance.
-  - Converts `Error` objects to plain `__error__` sentinels.
+  - Preserves built-in value objects (`Date`, `RegExp`, `URL`, `Map`, `Set`) as tagged plain objects so they are not reduced to `{}` by `Object.keys()`.
+  - Preserves `Boom` error metadata (`output`, `data`, `isServer`) so the parent can rebuild a real `Boom` instance.
+  - Converts plain `Error` objects to `__error__` sentinels.
   - Replaces functions with `'__fn__'`.
 - On the parent side, `revivePostMessage()` rebuilds the protobuf message instances from the tagged JSON using the corresponding constructor's `fromObject()`. This restores runtime `Buffer` / `Long` types so downstream code that decrypts messages or accesses binary fields receives the same types as in direct mode.
+- `Date`, `RegExp`, `URL`, `Map`, and `Set` are restored to their original runtime types on the parent side.
+- `Boom` errors are restored as real `Boom` instances, preserving `output.statusCode`, `output.payload`, and `data`.
 - WebSocket events are forwarded by monkey-patching `sock.ws.emit` so that `ws.on(...)` works on the proxy side.
 
 ### 3.3. RPC Handling
@@ -233,6 +239,7 @@ No other methods require this treatment — `WAMediaUpload` only flows through `
 - For each proxied callback key, the child posts a `callback-call` message to the parent and waits for a `callback-result`.
 - Keystore operations are dispatched as `keystore.<method>` callback keys.
 - The child sends `socket-info` messages immediately on socket creation and synchronously inside the `connection.update` listener when `connection === 'open'`. The synchronous call (no `setTimeout`) ensures the `socket-info` message is posted to the parent **before** the `connection.update` event is forwarded, so `wsocket.user` is already populated when the parent's connection handler runs.
+- `socket-info` is serialized before crossing the boundary because `authState.keys` contains forwarding functions that would otherwise cause `postMessage` to drop the message.
 
 ### 3.5. Socket Cleanup
 

@@ -27,6 +27,7 @@ import { Readable, pipeline } from 'stream'
 import { promisify } from 'util'
 import { tmpdir } from 'os'
 import Long from 'long'
+import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto'
 import type { UserFacingSocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
@@ -333,10 +334,44 @@ function revivePostMessage(value: unknown): any {
 
 	if (value !== null && typeof value === 'object') {
 		if ((value as any).__error__) {
+			// Boom errors carry status codes, payloads, and extra data. Rebuild
+			// a real Boom instance so callers can inspect err.output.statusCode.
+			if ((value as any).__boom__) {
+				const boom = new Boom((value as any).message, {
+					statusCode: (value as any).output?.statusCode,
+					data: (value as any).data
+				})
+				// Restore the exact output payload/headers from the worker so the
+				// status code and error name match direct mode.
+				if ((value as any).output) {
+					Object.assign(boom.output, (value as any).output)
+				}
+
+				boom.stack = (value as any).stack || boom.stack
+				return boom
+			}
+
 			const err = new Error((value as any).message)
 			err.name = (value as any).name
 			err.stack = (value as any).stack
 			return err
+		}
+
+		// Revive built-in value objects tagged by the child.
+		if ((value as any).__date__) {
+			return new Date((value as any).value)
+		}
+		if ((value as any).__regexp__) {
+			return new RegExp((value as any).source, (value as any).flags)
+		}
+		if ((value as any).__url__) {
+			return new URL((value as any).href)
+		}
+		if ((value as any).__map__) {
+			return new Map(revivePostMessage((value as any).entries))
+		}
+		if ((value as any).__set__) {
+			return new Set(revivePostMessage((value as any).entries))
 		}
 
 		// Revive protobuf messages tagged by the child. fromObject() will
@@ -365,7 +400,7 @@ function revivePostMessage(value: unknown): any {
 		}
 
 		if (Array.isArray(value)) {
-			// Arrays: recurse to revive any Error sentinels / Longs / Uint8Arrays / protobuf messages inside
+			// Arrays: recurse to revive any Error sentinels / Longs / Uint8Arrays / protobuf messages / built-ins inside
 			let changed = false
 			const result = value.map(v => {
 				const revived = revivePostMessage(v)
@@ -375,7 +410,7 @@ function revivePostMessage(value: unknown): any {
 			return changed ? result : value
 		}
 		// Plain objects: only recurse if they might contain __error__ sentinels,
-		// Long-like objects, Uint8Arrays, or protobuf markers.
+		// Long-like objects, Uint8Arrays, protobuf markers, or built-in tags.
 		if (value.constructor === Object || value.constructor === undefined) {
 			let changed = false
 			const result: any = {}
@@ -611,7 +646,12 @@ async function handleCallbackCall(
 		try {
 			log?.debug({ keystoreMethod: method, argCount: args.length }, 'invoking keystore method')
 			const result = await keystore[method](...args)
-			slot.worker.postMessage({ type: 'callback-result', socketId, id, result })
+			slot.worker.postMessage({
+				type: 'callback-result',
+				socketId,
+				id,
+				result: deepStripFunctions(result)
+			})
 		} catch (err: any) {
 			log?.error({ err, keystoreMethod: method }, 'keystore method threw error')
 			slot.worker.postMessage({
@@ -640,7 +680,12 @@ async function handleCallbackCall(
 	try {
 		log?.debug({ callbackKey: key, argCount: args.length }, 'invoking proxied callback')
 		const result = await fn(...args)
-		slot.worker.postMessage({ type: 'callback-result', socketId, id, result })
+		slot.worker.postMessage({
+			type: 'callback-result',
+			socketId,
+			id,
+			result: deepStripFunctions(result)
+		})
 	} catch (err: any) {
 		log?.error({ err, callbackKey: key }, 'proxied callback threw error')
 		slot.worker.postMessage({
@@ -717,8 +762,30 @@ async function drainPool(): Promise<void> {
  * Recursively clone a value, replacing all functions with the sentinel
  * string '__proxy_fn__'. This ensures the config can be sent via
  * postMessage (structured clone).
+ *
+ * Built-in value objects (Date, RegExp, URL, Map, Set) are preserved in
+ * their serializable tagged form so they survive the boundary instead of
+ * being reduced to empty objects by Object.keys().
  */
 function deepStripFunctions(value: unknown, seen = new WeakSet()): any {
+	if (typeof value === 'function') {
+		return '__proxy_fn__'
+	}
+	if (value instanceof Date) {
+		return { __date__: true, value: value.toISOString() }
+	}
+	if (value instanceof RegExp) {
+		return { __regexp__: true, source: value.source, flags: value.flags }
+	}
+	if (value instanceof URL) {
+		return { __url__: true, href: value.href }
+	}
+	if (value instanceof Map) {
+		return { __map__: true, entries: deepStripFunctions(Array.from(value.entries()), seen) }
+	}
+	if (value instanceof Set) {
+		return { __set__: true, entries: deepStripFunctions(Array.from(value.values()), seen) }
+	}
 	if (typeof value === 'function') {
 		return '__proxy_fn__'
 	}

@@ -8,6 +8,7 @@
  */
 import { isMainThread, parentPort } from 'worker_threads'
 import NodeCache from '@cacheable/node-cache'
+import { Boom } from '@hapi/boom'
 import makeWASocket from '../Socket'
 import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { UserFacingSocketConfig } from '../Types'
@@ -89,8 +90,8 @@ function proxyCallback(socketId: number, key: ProxiedCallbackKey, log: ILogger, 
 
 /**
  * Recursively clone a value for postMessage, replacing non-cloneable types
- * (Error, Function) with plain serializable representations and converting
- * protobufjs message instances to JSON.
+ * (Error, Function) with plain serializable representations, preserving
+ * built-in value objects, and converting protobufjs message instances to JSON.
  *
  * Protobuf messages (e.g. proto.Message, proto.WebMessageInfo) carry a
  * toJSON() method that serializes byte fields as base64 strings and 64-bit
@@ -102,10 +103,42 @@ function proxyCallback(socketId: number, key: ProxiedCallbackKey, log: ILogger, 
  */
 function serializeForPostMessage(value: unknown, seen = new WeakSet()): any {
 	if (value instanceof Error) {
+		// Boom carries critical metadata (statusCode, output, data, isServer).
+		// Preserve it so the parent can reconstruct a real Boom instance.
+		if ((value as any).isBoom) {
+			return {
+				__error__: true,
+				__boom__: true,
+				message: value.message,
+				name: value.name,
+				stack: value.stack,
+				data: (value as any).data,
+				output: (value as any).output,
+				isServer: (value as any).isServer
+			}
+		}
+
 		return { __error__: true, message: value.message, name: value.name, stack: value.stack }
 	}
 	if (typeof value === 'function') {
 		return '__fn__'
+	}
+	// Preserve built-in value objects that structured clone handles, but tag
+	// them so the parent can reconstruct the exact same runtime type.
+	if (value instanceof Date) {
+		return { __date__: true, value: value.toISOString() }
+	}
+	if (value instanceof RegExp) {
+		return { __regexp__: true, source: value.source, flags: value.flags }
+	}
+	if (value instanceof URL) {
+		return { __url__: true, href: value.href }
+	}
+	if (value instanceof Map) {
+		return { __map__: true, entries: serializeForPostMessage(Array.from(value.entries()), seen) }
+	}
+	if (value instanceof Set) {
+		return { __set__: true, entries: serializeForPostMessage(Array.from(value.values()), seen) }
 	}
 	if (value !== null && typeof value === 'object') {
 		if (seen.has(value as object)) return '[Circular]'
@@ -237,13 +270,19 @@ function createSocket(socketId: number, rawConfig: any): void {
 
 	// Send user and authState to the parent when they become available.
 	// These are needed for wsocket.user and wsocket.authState on the proxy side.
+	// authState.keys contains forwarding functions, so we must serialize the
+	// info before postMessage or the whole message is dropped.
 	const sendSocketInfo = () => {
 		try {
 			const info: any = {}
 			if ((sock as any).user) info.user = (sock as any).user
 			if ((sock as any).authState) info.authState = (sock as any).authState
 			if (Object.keys(info).length > 0) {
-				parentPort!.postMessage({ type: 'socket-info', socketId, info })
+				parentPort!.postMessage({
+					type: 'socket-info',
+					socketId,
+					info: serializeForPostMessage(info)
+				})
 			}
 		} catch (_) {
 			/* best-effort */
