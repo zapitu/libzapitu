@@ -1,3 +1,12 @@
+# [1.0.0-alpha.27](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.26...v1.0.0-alpha.27) (2026-11-26)
+
+
+### Features
+
+* **status:** add handling for status stanzas in message reception ([1dc4ae7](https://github.com/zapitu/libzapitu/commit/1dc4ae758651245cbfd59f2eb5829a7f1c570529))
+
+
+
 # [1.0.0-alpha.26](https://github.com/zapitu/libzapitu/compare/v1.0.0-alpha.25...v1.0.0-alpha.26) (2026-09-02)
 
 
