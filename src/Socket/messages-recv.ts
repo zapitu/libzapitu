@@ -929,6 +929,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const handleStatus = async (node: BinaryNode) => {
+		try {
+			if ((await shouldIgnoreJid(node.attrs.from)) && node.attrs.from !== '@s.whatsapp.net') {
+				await sendMessageAck(node)
+				return
+			}
+
+			const encNode = getBinaryNodeChild(node, 'enc')
+			if (!encNode) {
+				await sendMessageAck(node)
+				return
+			}
+
+			await processingMutex.mutex(async () => {
+				const {
+					fullMessage: msg,
+					decrypt
+				} = decryptMessageNode(
+					node,
+					authState.creds.me!.id,
+					authState.creds.me!.lid || '',
+					signalRepository,
+					logger
+				)
+
+				await decrypt()
+
+				cleanMessage(msg, authState.creds.me!.id)
+
+				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+
+				await sendMessageAck(node)
+			})
+		} catch (error) {
+			await sendMessageAck(node)
+			onUnexpectedError(error, 'processing status stanza')
+		}
+	}
+
 	const fetchMessageHistory = async (
 		count: number,
 		oldestMsgKey: WAMessageKey,
@@ -1170,7 +1209,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	type MessageType = 'message' | 'call' | 'receipt' | 'notification'
+	type MessageType = 'message' | 'call' | 'receipt' | 'notification' | 'status'
 
 	type OfflineNode = {
 		type: MessageType
@@ -1182,7 +1221,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			['message', handleMessage],
 			['call', handleCall],
 			['receipt', handleReceipt],
-			['notification', handleNotification]
+			['notification', handleNotification],
+			['status', handleStatus]
 		])
 		const nodes: OfflineNode[] = []
 		let isProcessing = false
@@ -1472,6 +1512,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	ws.on('CB:notification', async (node: BinaryNode) => {
 		processNode('notification', node, 'handling notification', handleNotification)
+	})
+	ws.on('CB:status', async (node: BinaryNode) => {
+		processNode('status', node, 'processing status stanza', handleStatus)
 	})
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
 		handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'))
